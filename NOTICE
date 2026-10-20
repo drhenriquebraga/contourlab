@@ -1,0 +1,335 @@
+Radioterapia.AI - ContourLab
+Copyright 2026 Henrique Braga
+
+Licenciado sob a Apache License, Version 2.0. Ver o arquivo LICENSE.
+
+Componente da Radioterapia.AI Local Suite
+(https://github.com/radioterapia-ai/local-suite). O NOTICE da Suite cobre o
+pacote inteiro que a estacao instala -- o Python, as bibliotecas fixadas e
+a porta; este cobre os modelos que este componente executa, as
+bibliotecas que o codigo dele importa e o conteudo de terceiro que viaja
+neste repositorio.
+
+================================================================================
+  O QUE E NOSSO, E O QUE NAO E
+================================================================================
+
+NAO SOMOS AUTORES DOS MODELOS DE SEGMENTACAO.
+
+Quem faz o trabalho clinico -- reconhecer um orgao numa tomografia -- e software
+de terceiro, listado abaixo. O que este componente constroi e a CAMADA DE
+ACESSIBILIDADE: rodar modelos que ja existem na estacao do servico, fazer o
+pos-processamento, agrupar, nomear, construir as estruturas que um plano usa
+e gravar o RTSTRUCT como sugestao nao aprovada. Nao treinamos modelo com os
+nossos casos, e a proposta e de ensino e pesquisa.
+
+Tornar alcancavel nao e neutro: e o ato que transforma "modelo de pesquisa" em
+"usado na clinica". Os avisos, o rascunho obrigatorio e o humano no laco sao
+responsabilidade nossa por causa disso.
+
+Os pesos dos modelos NAO viajam neste repositorio: o preparador da Suite os
+baixa da origem de cada um, e a licenca de cada peso esta na secao dele.
+
+================================================================================
+  MODELOS QUE ESTE COMPONENTE EXECUTA
+================================================================================
+
+--------------------------------------------------------------------------------
+TotalSegmentator
+--------------------------------------------------------------------------------
+  Autoria   Wasserthal J. et al., Department of Research and Analysis,
+            University Hospital Basel
+  Licenca   Apache License 2.0
+            https://www.apache.org/licenses/LICENSE-2.0
+  Versao    2.18.0
+  Origem    https://github.com/wasserth/TotalSegmentator
+  Tarefas   abdominal_muscles, breasts, craniofacial_structures,
+            head_glands_cavities, head_muscles, headneck_bones_vessels,
+            headneck_muscles, hip_implant, liver_lesions, liver_lesions_mr,
+            liver_segments, liver_segments_mr, lung_nodules, lung_vessels,
+            lung_vessels_LEGACY, oculomotor_muscles,
+            pleural_pericard_effusion, teeth, total, total_mr, total_v3,
+            trunk_cavities, vertebrae_body, vertebrae_mr
+
+  DECLARACAO DOS PROPRIOS AUTORES: nao e dispositivo medico e nao se destina a
+  uso clinico. Consta como componente certificado dentro de produtos aprovados
+  pelo FDA -- o que nao se estende a este uso.
+
+  A ESTATISTICA DE USO DA BIBLIOTECA FICA DESLIGADA. De fabrica, ela envia a
+  stats.totalsegmentator.com um relatorio de uso a cada predicao. Este
+  componente grava `send_usage_stats: false` no arquivo de configuracao dela e,
+  no processo que a executa, troca a funcao de envio por uma que nao envia
+  nada.
+
+  AS TAREFAS DE ACHADO (lung_nodules, liver_lesions, liver_lesions_mr) vem
+  com a biblioteca e nao rodam de fabrica: rodam por ato declarado de quem
+  opera, e o log anuncia com a palavra ACHADO.
+
+  Citacao pedida pelos autores:
+    Wasserthal J., Breit H.-C., Meyer M.T., et al. TotalSegmentator: Robust
+    Segmentation of 104 Anatomic Structures in CT Images.
+    Radiology: Artificial Intelligence, 2023.
+
+--------------------------------------------------------------------------------
+nnU-Net
+--------------------------------------------------------------------------------
+  Autoria   Isensee F. et al., Division of Medical Image Computing,
+            German Cancer Research Center (DKFZ)
+  Licenca   Apache License 2.0
+            https://www.apache.org/licenses/LICENSE-2.0
+  Versao    2.7.0
+  Origem    https://github.com/MIC-DKFZ/nnUNet
+
+  Os autores do TotalSegmentator pedem que o nnU-Net seja citado tambem, por o
+  modelo ser fortemente baseado nele. Os modelos do encefalo em TC, da CADS e
+  da MOOSE rodam pelo nnU-Net v2. Os pesos dos niveis linfonodais sao de
+  nnU-Net v1, e este componente monta a rede deles em PyTorch, sem a
+  biblioteca v1.
+
+    Isensee F., Jaeger P.F., Kohl S.A.A., Petersen J., Maier-Hein K.H.
+    nnU-Net: a self-configuring method for deep learning-based biomedical
+    image segmentation. Nature Methods, 2021.
+
+--------------------------------------------------------------------------------
+NV-Segment-CT (NVIDIA)
+--------------------------------------------------------------------------------
+  Autoria   NVIDIA
+  Licenca   NVIDIA Open Model License Agreement (pesos do modelo)
+            https://huggingface.co/nvidia/NV-Segment-CT/blob/main/LICENSE
+            Apache License 2.0 (codigo de inferencia, do bundle MONAI)
+            https://www.apache.org/licenses/LICENSE-2.0
+  Versao    vista3d_pretrained_model - monai 1.4.0
+  Origem    https://huggingface.co/nvidia/NV-Segment-CT
+            https://github.com/Project-MONAI/VISTA  (codigo de inferencia)
+
+  DECLARACAO DO PROPRIO AUTOR: destinado a fins de pesquisa, nao a uso clinico.
+
+  O PESO E O MESMO DO MONAI VISTA-3D (o mesmo sha256). A NVIDIA o publica sob
+  dois contratos, e este componente usa o que permite uso comercial. O outro
+  -- a NVIDIA License, clausula 3.3, "research or evaluation purposes only" --
+  nao entra aqui.
+
+  O CAVEAT CLINICO NAO SAI JUNTO COM O COMERCIAL. O cartao do modelo diz que
+  ele e para pesquisa e nao para uso clinico. Ler "comercialmente usavel" como
+  "liberado para rotina" e a leitura que esta linha impede.
+
+  A inferencia roda LOCALMENTE, a partir dos pesos baixados para a estacao. A
+  API hospedada da NVIDIA nao e chamada, e a bateria tools/test_rt.py quebra
+  se alguem acrescentar uma chamada que leve imagem para fora. A rotina pede
+  so as classes de anatomia; as de achado ficam fora do pedido. Roda so por
+  pedido, serie a serie, como motor de comparacao, num arquivo proprio.
+
+--------------------------------------------------------------------------------
+CADS (variante `open`)
+--------------------------------------------------------------------------------
+  Autoria   Xu M. et al., CADS: A Comprehensive Anatomical Dataset and
+            Segmentation for Whole-Body Anatomy in Computed Tomography
+  Licenca   Apache License 2.0 (codigo)
+            https://www.apache.org/licenses/LICENSE-2.0
+            CC BY-SA 4.0 (PESOS da variante `open`)
+            https://creativecommons.org/licenses/by-sa/4.0/
+  Versao    cads-model-open_v1.0.0 - Dataset556_GC256
+  Origem    https://github.com/murong-xu/CADS
+            https://github.com/murong-xu/CADS/releases/tag/cads-model-open_v1.0.0
+
+  O PESO TEM LICENCA PROPRIA, e nao a do codigo. O projeto publica tres
+  variantes com licencas diferentes; e a `open` (CC BY-SA 4.0) que este
+  componente baixa, de proposito.
+
+  O SHAREALIKE TEM CAUDA: rodar o modelo e usar o contorno que sai dele NAO
+  produz obra derivada. Fazer fine-tune com dado da casa produz, e esse peso
+  teria de ser redistribuido sob CC BY-SA 4.0.
+
+--------------------------------------------------------------------------------
+Niveis linfonodais de cabeca e pescoco
+--------------------------------------------------------------------------------
+  Autoria   Weissmann T., Huang Y., Fischer S., et al. (ultimo autor:
+            Putz F.), Universitatsklinikum Erlangen
+  Licenca   CC0 1.0 Universal (dominio publico)
+            https://creativecommons.org/publicdomain/zero/1.0/
+  Versao    Task110_HNLNFixed - nnU-Net v1
+  Origem    https://github.com/putzfn/HNLNL_autosegmentation_trained_models
+
+  CC0 NAO EXIGE ATRIBUICAO, e a citacao esta aqui assim mesmo:
+
+    Weissmann T., Huang Y., Fischer S., Roesch J., Mansoorian S.,
+    Ayala Gaona H., Gostian A.-O., Hecht M., Lettmaier S., Deloch L.,
+    Frey B., Gaipl U.S., Distel L.V., Maier A., Iro H., Semrau S., Bert C.,
+    Fietkau R., Putz F. Deep learning for automatic head and neck lymph node
+    level delineation provides expert-level accuracy. Frontiers in Oncology,
+    2023;13:1115258. doi:10.3389/fonc.2023.1115258
+
+  OS NOMES SAO OS DO CONSENSO DE GREGOIRE (Lvl_Ia a Lvl_VIII), pelo mapa entre
+  o rotulo do modelo e o nivel que os autores publicaram com os pesos, e so
+  para a versao de pesos que o mapa nomeia; com pesos de outra versao, os
+  nomes neutros voltam. Cada nivel sai com o tipo CONTROL: compartimento
+  anatomico, e nao orgao nem CTV. A uniao dos niveis (LNL_UNION_ai) NAO E OAR
+  NEM CTV, e a descricao da estrutura diz isso.
+
+--------------------------------------------------------------------------------
+MOOSE (ENHANCE.PET)
+--------------------------------------------------------------------------------
+  Autoria   Shiyam Sundar L.K. et al., QIMP Team / ENHANCE.PET initiative,
+            Medical University of Vienna
+  Licenca   Apache License 2.0 (codigo)
+            https://www.apache.org/licenses/LICENSE-2.0
+            CC BY 4.0 (PESOS dos modelos)
+            https://creativecommons.org/licenses/by/4.0/
+  Versao    moosez-v.3.1.3 - Dataset888_Cardiac e Dataset778_Body_composition
+  Origem    https://github.com/ENHANCE-PET/MOOSE
+
+  ATRIBUICAO E CONDICAO DA LICENCA, e e por isso que esta secao existe. A
+  CC BY 4.0 permite uso comercial e nao tem ShareAlike -- o que ela exige e
+  credito.
+
+    Shiyam Sundar L.K., Yu J., Muzik O. et al. Fully automated, semantic
+    segmentation of whole-body 18F-FDG PET/CT images based on data-centric
+    artificial intelligence. Journal of Nuclear Medicine, 2022.
+
+  O PROTOCOLO DE DELINEAMENTO DELES E DE MEDICINA NUCLEAR (PET/CT de corpo
+  inteiro), e nao de radioterapia. Por isso o conjunto sai em arquivo proprio,
+  com o sufixo `_mse`, e NAO entra no RTSTRUCT entregue.
+
+--------------------------------------------------------------------------------
+CT Brain Segmentation Radiotherapy (estruturas do encefalo em TC)
+--------------------------------------------------------------------------------
+  Autoria   Buti G., Giovenco M., Yilmaz T., Ajdari A., Bridge C.P., Sharp G.C.,
+            Lofman F., Shih H.A., Bortfeld T.
+  Licenca   MIT (PESOS)
+            https://spdx.org/licenses/MIT.html
+  Versao    nnUNetTrainer__nnUNetPlans__3d_fullres, fold_all (nnU-Net v2),
+            revisao d3f8bc7248ac9138e03be7e6a839d7844599b8a1
+  Origem    https://huggingface.co/GregoryButi/CT_Brain_Segmentation_Radiotherapy
+
+    Buti G., Giovenco M., Yilmaz T., Ajdari A., Bridge C.P., Sharp G.C.,
+    Lofman F., Shih H.A., Bortfeld T. Clinical target volumes for glioma -
+    Automated delineation to improve neuroanatomic consistency. Physics and
+    Imaging in Radiation Oncology, 2025;36:100865.
+    doi:10.1016/j.phro.2025.100865
+
+  O modelo foi treinado no conjunto GLIS-RT da The Cancer Imaging Archive,
+  que pede a citacao do conjunto e do artigo que o descreve:
+
+    Shusharina N., Bortfeld T. Glioma Image Segmentation for Radiotherapy: RT
+    targets, barriers to cancer spread, and organs at risk (GLIS-RT). The
+    Cancer Imaging Archive, 2021. doi:10.7937/TCIA.T905-ZQ20
+    Shusharina N., Bortfeld T., Cardenas C., et al. Cross-Modality Brain
+    Structures Image Segmentation for the Radiotherapy Target Definition and
+    Plan Optimization. Lecture Notes in Computer Science, 2021, pp. 3-15.
+    doi:10.1007/978-3-030-71827-5_1
+
+  SO TC, e so com o encefalo no campo.
+
+  A origem no Hugging Face declara a licenca MIT no cartao do modelo e nao
+  publica arquivo LICENSE nem linha de copyright; os detentores sao os
+  autores listados acima. O texto da licenca MIT, que acompanha os pesos:
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the
+    "Software"), to deal in the Software without restriction, including
+    without limitation the rights to use, copy, modify, merge, publish,
+    distribute, sublicense, and/or sell copies of the Software, and to
+    permit persons to whom the Software is furnished to do so, subject to
+    the following conditions:
+
+    The above copyright notice and this permission notice shall be included
+    in all copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+    OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+    MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+    IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+    CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+    TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+    SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+================================================================================
+  CONTEUDO DE TERCEIRO QUE VIAJA NESTE REPOSITORIO
+================================================================================
+
+--------------------------------------------------------------------------------
+tools/data/nv_segment_ct_labels.json
+--------------------------------------------------------------------------------
+  O que     o mapa nome -> indice das 132 classes do NV-Segment-CT, como a
+            NVIDIA o publica com o modelo. So a bateria
+            tools/test_nv_segment.py o le; o programa deriva o mesmo mapa
+            dos arquivos do modelo baixado, na estacao.
+  Origem    https://huggingface.co/nvidia/NV-Segment-CT
+  Licenca   a do repositorio do modelo (NVIDIA Open Model License Agreement,
+            na secao do NV-Segment-CT, acima)
+
+================================================================================
+  BIBLIOTECAS QUE O CODIGO DESTE COMPONENTE IMPORTA
+================================================================================
+
+  Nao viajam neste repositorio: o preparador da Suite as instala, na versao
+  fixada no build/requirements-demo.txt dela, e o NOTICE da Suite traz a
+  tabela inteira. A licenca e a que o metadado do proprio pacote declara.
+
+  PyTorch 2.5.1          BSD-3-Clause        https://pytorch.org
+  SimpleITK 2.5.6        Apache-2.0          https://simpleitk.org
+  pydicom 3.0.2          MIT                 https://pydicom.github.io
+  rt-utils 1.2.7         MIT                 https://github.com/qurit/rt-utils
+  nibabel 5.4.2          MIT                 https://nipy.org/nibabel
+  NumPy 1.26.4           BSD-3-Clause        https://numpy.org
+  SciPy 1.15.3           BSD-3-Clause        https://scipy.org
+  xgboost 3.2.0          Apache-2.0          https://xgboost.ai
+  MONAI 1.4.0            Apache-2.0          https://monai.io
+  FastAPI 0.141.1        MIT                 https://fastapi.tiangolo.com
+  uvicorn 0.52.1         BSD-3-Clause        https://www.uvicorn.org
+  TotalSegmentator 2.18.0                    (secao propria, acima)
+  nnunetv2 2.7.0                             (nnU-Net; secao propria, acima)
+
+  O endereco de cada licenca desta tabela:
+    Apache-2.0          https://www.apache.org/licenses/LICENSE-2.0
+    BSD-3-Clause        https://spdx.org/licenses/BSD-3-Clause.html
+    MIT                 https://spdx.org/licenses/MIT.html
+
+  O codigo pergunta tambem, sem exigir, se a estacao tem OpenVINO ou
+  torch-directml (para escolher o dispositivo de calculo). Nenhum dos dois e
+  instalado pelo pacote.
+
+================================================================================
+  A FRONTEIRA CLINICA
+================================================================================
+
+Toda estrutura gerada entra no sistema de planejamento como SUGESTAO NAO
+APROVADA (`ApprovalStatus = UNAPPROVED`), com sufixo de procedencia no nome:
+
+  _ai    pipeline deste componente (TotalSegmentator + pos-processamento)
+  _ts    TotalSegmentator sem pos-processamento (so o indice 26 fundido
+         ao sacro)
+  _nv    NV-Segment-CT (NVIDIA)
+  _cds   CADS (variante `open`)
+  _mse   MOOSE (ENHANCE.PET)
+  _lnl   niveis linfonodais cervicais (Weissmann et al., 2023)
+
+  E cada PLUGIN -- uma tarefa opcional do TotalSegmentator que nao alimenta o
+  conjunto completo -- grava o seu arquivo (rotulo STUDY_ e o codigo dele),
+  com o nosso pos-processamento e um sufixo proprio de tres letras:
+
+  _orb   orbita: musculos extraoculares, globos e nervos opticos
+  _tth   dentes
+  _lvs   vasos e vias aereas do pulmao
+  _lvl   vasos do pulmao, modelo de 2023
+  _nod   nodulos pulmonares (ACHADO)
+  _lsg   segmentos hepaticos
+  _lls   lesoes hepaticas (ACHADO)
+  _vbd   corpo vertebral e disco intervertebral
+  _hip   protese de quadril
+  _vmr   vertebras e discos na RM
+  _lsm   segmentos hepaticos na RM
+  _llm   lesoes hepaticas na RM (ACHADO)
+
+  A FONTE E `app/radai_sets.py` (o campo `sufixo` de cada conjunto e de cada
+  plugin). Conjunto ou plugin novo = linha nova aqui, no mesmo commit.
+
+O CODIGO PUBLICADO e material educacional. NAO e dispositivo medico e nao foi
+validado para uso clinico. Quem baixa, modifica e implanta responde pelo
+proprio build -- e o build e o da Suite (build/ do repositorio
+radioterapia-ai/local-suite), que monta o instalador a partir dos
+repositorios de cada componente.
+
+Revisao e aprovacao continuam sendo ato medico, dentro do sistema de
+planejamento. Nada e aprovado automaticamente, e nenhuma alteracao pode remover
+essa fronteira.
