@@ -4,16 +4,17 @@ import os
 import threading
 
 import radai_batch
+import radai_sets
 import radai_viewer
 import radai_web
 
 ROTA = "/verseg"
 
 
-CURTO_DA_TELA = {"oar": u"OAR", "fast": u"OAR_Fast", "full": u"FULL"}
+CURTO_DA_TELA = dict(radai_sets.NOME_NA_TELA)
 ROTULO_DA_TELA = {
-    "oar": u"OAR — a seleção do FULL voltada para radioterapia",
-    "fast": u"OAR_Fast — a seleção do modo FAST voltada para radioterapia",
+    "oar": u"STUDY — a seleção do FULL voltada para radioterapia",
+    "fast": u"STUDY_Fast — a seleção do modo FAST voltada para radioterapia",
     "full": u"FULL — todo o pós-processamento, partes e compostos",
 }
 
@@ -120,19 +121,10 @@ def series_contornadas(pasta, sem_contorno=False):
     for s, real, e2 in reais:
         if e2 or not real:
             continue
-        arquivos = []
         _outros = por_pasta.get(os.path.normcase(os.path.abspath(real)), ())
-        for nome in _rs_da_pasta(real, s.get("uid"), _outros):
-            r = rotulo_do_arquivo(nome)
-            arquivos.append({"arquivo": nome, "cod": r["cod"],
-                             "curto": r["curto"], "rotulo": r["rotulo"],
-                             "entregue": r["entregue"], "plugin": r["plugin"]})
-        mapa = _item_do_mapa(real, s.get("uid"))
-        if mapa:
-            arquivos.append(mapa)
+        arquivos = arquivos_contornados(real, s.get("uid"), _outros)
         if not arquivos and not sem_contorno:
             continue
-        arquivos.sort(key=_posicao)
         out.append({
             "uid": s.get("uid"), "pasta": real, "curto": (s.get("uid") or "")[-12:],
             "pid": s.get("pid", ""), "date": s.get("date", ""),
@@ -147,10 +139,32 @@ def series_contornadas(pasta, sem_contorno=False):
     return out, ""
 
 
+def arquivos_contornados(real, uid, outros=()):
+    arquivos = []
+    for nome in _rs_da_pasta(real, uid, outros):
+        r = rotulo_do_arquivo(nome)
+        arquivos.append({"arquivo": nome, "cod": r["cod"],
+                         "curto": r["curto"], "rotulo": r["rotulo"],
+                         "entregue": r["entregue"], "plugin": r["plugin"]})
+    mapa = _item_do_mapa(real, uid)
+    if mapa:
+        arquivos.append(mapa)
+    arquivos.sort(key=_posicao)
+    return arquivos
+
+
+def lembrar_modalidade(b, modalidade):
+    _MODALIDADE[str(b or u"")] = modalidade or "CT"
+
+
+def resolver_pasta_do_exame(caminho):
+    return _resolver(caminho)
+
+
 def anotar_bilhete(it):
     import radai_thumbnail
     it["b"] = radai_thumbnail.bilhete(it.get("pasta", u""), it.get("uid", u""))
-    _MODALIDADE[it["b"]] = it.get("modalidade") or "CT"
+    lembrar_modalidade(it["b"], it.get("modalidade"))
     return it
 
 
@@ -308,17 +322,27 @@ def _bruto_dos_pontos(contorno):
         return b""
 
 
+def _nome_padrao_da_roi(item):
+    try:
+        import radai_sets
+        return radai_sets.nome_padrao_da_descricao(
+            getattr(item, "ROIDescription", u"")) or None
+    except Exception:
+        return None
+
+
 def _ler_rs(caminho, geo):
     import numpy as np
     import pydicom
     ds = pydicom.dcmread(str(caminho), force=True)
     rotulo = str(getattr(ds, "StructureSetLabel", "") or "")
-    nomes = {}
+    nomes, padroes = {}, {}
     for r in getattr(ds, "StructureSetROISequence", None) or []:
         try:
             nomes[int(r.ROINumber)] = str(r.ROIName)
         except Exception:
             continue
+        padroes[int(r.ROINumber)] = _nome_padrao_da_roi(r)
     rois, brutos, donos = [], [], []
     for rc in getattr(ds, "ROIContourSequence", None) or []:
         try:
@@ -334,6 +358,7 @@ def _ler_rs(caminho, geo):
         except Exception:
             cor = [255, 255, 0]
         rois.append({"nome": nome, "cor": cor, "cortes": {},
+                     "padrao": padroes.get(num) or nome,
                      "a": 0.0, "ax": 0.0, "ay": 0.0, "az": 0.0})
         for c in getattr(rc, "ContourSequence", None) or []:
             b = _bruto_dos_pontos(c)
@@ -700,7 +725,9 @@ def mascaras_da_serie(pasta, uid, img, aceita=None, conjuntos=(u"full",),
             m = np.zeros(forma, dtype=bool)
             usadas = []
             for roi in lido.get("rois") or ():
-                if not roi.get("cortes") or not quer(roi.get("nome")):
+                # GUARDA: no STUDY com nome proprio quem decide e o nome padrao, guardado na descricao da ROI.
+                if not roi.get("cortes") or not quer(roi.get("padrao")
+                                                     or roi.get("nome")):
                     continue
                 usadas.append(roi["nome"])
                 _mascara_dos_cortes(roi["cortes"], forma, m)
@@ -1708,19 +1735,6 @@ def _icone(nome):
 def montar(app):
     from fastapi import Request
     from fastapi.responses import Response
-
-    @app.post("/api/verseg/series")
-    async def _series(request: Request):
-        try:
-            c = await request.json() or {}
-            pasta_pedida = (c or {}).get("pasta", "")
-            lista, erro = await radai_web.no_threadpool(
-                series_contornadas, pasta_pedida)
-            for it in lista:
-                anotar_bilhete(it)
-            return {"series": lista, "erro": erro}
-        except Exception as e:
-            return {"series": [], "erro": u"%s: %s" % (type(e).__name__, e)}
 
     def _pasta(b, uid=u""):
         import radai_thumbnail

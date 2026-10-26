@@ -173,9 +173,9 @@ def teste_a_tela_nao_cita_tps():
     import radai_viewseg
     f = textos_com_tps()
     checar(u"nenhuma frase da tela cita o TPS", not f, u" | ".join(f)[:300])
-    checar(u"o OAR é «a seleção do FULL voltada para radioterapia» (V12)",
+    checar(u"o STUDY é «a seleção do FULL voltada para radioterapia»",
            radai_viewseg.ROTULO_DA_TELA.get(u"oar")
-           == u"OAR — a seleção do FULL voltada para radioterapia")
+           == u"STUDY — a seleção do FULL voltada para radioterapia")
     velho = radai_viewseg.ROTULO_DA_TELA[u"oar"]
     try:
         radai_viewseg.ROTULO_DA_TELA[u"oar"] = u"OAR — o entregue ao TPS, seleção do FULL"
@@ -506,6 +506,91 @@ def teste_o_acervo_e_o_seletor_no_js():
            and u".uid" not in ab, ab[:200])
 
 
+def _busca_propria(js):
+    j = _sem_comentarios_js(js)
+    return u"fetch('/api/verseg/series'" in j or u"/api/verseg/series" in j
+
+
+def _series_pela_casca(pasta):
+    import radai_varrer
+    import radai_view
+    radai_view.registrar_varredura()
+    d = radai_varrer.iniciar(radai_view.USO_DA_VARREDURA, pasta, dias=0,
+                             em_segundo_plano=False)
+    return {u"series": list(d.get(u"linhas") or []), u"erro": d.get(u"erro")}
+
+
+def teste_a_pasta_e_a_varredura_da_casca():
+    secao(u"«Aponte uma pasta»: a varredura da casca, só com as séries contornadas")
+    import radai_view
+    import radai_viewseg
+    import radai_varrer
+    import make_test_series
+    from datetime import datetime
+    js = radai_view.JS
+    vr = U._corpo_js(js, u"vrVarrer")
+    checar(u"a busca é a lista que cresce da casca (uiVarrerLista), com o uso "
+           u"«verseg» e o filtro de data", u"window.uiVarrerLista(" in vr
+           and u"@USO_JS@" in vr and radai_view.USO_DA_VARREDURA == u"verseg"
+           and u"'vr_dias'" in vr and u"pintar:" in vr, vr[:160])
+    checar(u"e o POST único antigo saiu da tela", not _busca_propria(js))
+    checar(u"  (isca) o POST único de volta reprova",
+           _busca_propria(js + u"\nfetch('/api/verseg/series', {});\n"))
+    _app_s, _cli_s = _app()
+    checar(u"  e a rota dele saiu do servidor (só a varredura da casca lista)",
+           u"/api/verseg/series" not in set(
+               getattr(r, "path", u"") for r in _app_s.routes)
+           and _cli_s.post(u"/api/verseg/series", json={}).status_code
+           in (404, 405))
+    p = radai_view._pagina()
+    checar(u"o popup tem o filtro de data e a estrela da pasta favorita",
+           u'id="vr_dias"' in p and u'data-ui-dias' in p
+           and u'data-ui-fav="vr_pasta"' in p)
+    checar(u"a série que chega de outra tela é procurada em todas as datas",
+           u"vrVarrer({dias: 0})" in js)
+
+    base, pasta, uid = U._ver_serie_com_rtstructs()
+    for n in os.listdir(pasta):
+        if n.startswith(u"RS_RadAI_") and n.endswith(u"_00000001.dcm"):
+            os.rename(os.path.join(pasta, n), os.path.join(
+                pasta, n.replace(u"_00000001.dcm", u"_%s.dcm" % uid[-8:])))
+    solta = os.path.join(base, u"_irma")
+    irma = make_test_series.escreve_serie(solta, u"PAC_VER", datetime.now(), 20)
+    for n in os.listdir(solta):
+        shutil.move(os.path.join(solta, n), os.path.join(pasta, u"IRMA_" + n))
+    os.rmdir(solta)
+    vazia = os.path.join(base, u"PAC_SEM", u"CT")
+    make_test_series.escreve_serie(vazia, u"PAC_SEM", datetime.now(), 20)
+    radai_view.registrar_varredura()
+    d = radai_varrer.iniciar(radai_view.USO_DA_VARREDURA, base, dias=0,
+                             em_segundo_plano=False)
+    e = radai_varrer.estado(d.get(u"v"))
+    linhas = e.get(u"linhas") or []
+    checar(u"só a série com RTSTRUCT RadAI ao lado volta",
+           [l.get(u"uid") for l in linhas] == [uid],
+           str([(l.get(u"uid") or u"")[-8:] for l in linhas]))
+    l0 = (linhas or [{}])[0]
+    velha, _erro = radai_viewseg.series_contornadas(pasta)
+    checar(u"  com os mesmos arquivos que a busca antiga dava",
+           [r.get(u"arquivo") for r in l0.get(u"rs") or ()]
+           == [r.get(u"arquivo") for r in (velha or [{}])[0].get(u"rs") or ()]
+           and l0.get(u"rs"), str([r.get(u"cod") for r in l0.get(u"rs") or ()]))
+    checar(u"  com o bilhete do visor, e a modalidade guardada para ele",
+           l0.get(u"b") and l0.get(u"b") == l0.get(u"bilhete")
+           and radai_viewseg._MODALIDADE.get(l0.get(u"b")) == u"CT")
+    checar(u"  e a pasta não vai à tela", not any(u"pasta" in l for l in linhas))
+    checar(u"a série irmã, na mesma pasta e sem RTSTRUCT dela, fica de fora",
+           irma not in [l.get(u"uid") for l in linhas])
+    checar(u"  (isca) sem saber das irmãs da pasta, ela levaria os RTSTRUCT da outra",
+           bool(radai_viewseg.arquivos_contornados(pasta, irma, ())))
+    z = radai_varrer.iniciar(radai_view.USO_DA_VARREDURA,
+                             os.path.join(base, u"NAO_EXISTE.zip"), dias=0,
+                             em_segundo_plano=False)
+    ze = radai_varrer.estado(z.get(u"v"))
+    checar(u"pasta ou .zip que não existe responde o erro, sem lista",
+           ze.get(u"erro") and not ze.get(u"linhas"), str(ze.get(u"erro")))
+
+
 def _app():
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
@@ -611,13 +696,12 @@ def teste_o_servidor():
         indice = io.open(str(radai_archive.caminho_acervo()), encoding=u"utf-8").read()
         checar(u"o nome nunca vai ao índice do acervo", u"FANTOMA" not in indice)
 
-        s1 = cli.post(u"/api/verseg/series", json={u"pasta": dpasta, u"demo": True}).json()
+        s1 = _series_pela_casca(dpasta)
         checar(u"a marca de demo nao abre mais serie sem contorno",
                not (s1.get(u"series") or []), str(s1)[:200])
 
         _mapa_sintetico(pasta, uid, (20, 128, 128))
-        s = (cli.post(u"/api/verseg/series", json={u"pasta": pasta}).json()
-             .get(u"series") or [{}])[0]
+        s = (_series_pela_casca(pasta).get(u"series") or [{}])[0]
         rs = s.get(u"rs") or []
         mapa = [r for r in rs if r.get(u"cod") == u"rotulos"]
         checar(u"o mapa de rótulos entra como um conjunto a mais",
@@ -663,7 +747,8 @@ def teste_o_servidor():
             u"estruturas": [u"Heart_ai", u"Inventada_ai", u"Heart_ai"]}).json()
         f = radai_fichas.ler(r.get(u"ficha") or u"") or {}
         checar(u"a ficha leva a série, o arquivo e só as estruturas que ele tem",
-               f.get(u"origem") == u"verseg" and f.get(u"pasta") == pasta
+               f.get(u"origem") == u"verseg" and bool(f.get(u"pasta"))
+               and os.path.samefile(f.get(u"pasta"), pasta)
                and f.get(u"uid") == uid and f.get(u"tipo") == u"rtstruct"
                and f.get(u"arquivo") == u"RS_RadAI_FULL_20260926_00000001.dcm"
                and f.get(u"estruturas") == [u"Heart_ai"]
@@ -794,8 +879,7 @@ def teste_os_conjuntos_ao_lado_abrem():
             U._ver_rs_sintetico(os.path.join(pasta, arq), rot, (
                 (nome, (200, 120, 40), (5, 8), (30, 30, 50, 50)),))
         _app_, cli = _app()
-        s = (cli.post(u"/api/verseg/series", json={u"pasta": pasta}).json()
-             .get(u"series") or [{}])[0]
+        s = (_series_pela_casca(pasta).get(u"series") or [{}])[0]
         cods = [r.get(u"cod") for r in s.get(u"rs") or []]
         checar(u"todos os arquivos da série estão no seletor, na ordem da tela",
                cods == [u"oar", u"fast", u"full", u"ts", u"nv", u"cads", u"mse",
@@ -941,6 +1025,94 @@ def teste_as_mascaras_da_serie():
         shutil.rmtree(base, ignore_errors=True)
 
 
+def _serie_rm(pasta, iop, n=8, lado=32, pico=None):
+    import numpy as np
+    import pydicom
+    from pydicom.dataset import Dataset, FileMetaDataset
+    from pydicom.uid import generate_uid, ExplicitVRLittleEndian
+    os.makedirs(pasta, exist_ok=True)
+    linha = np.asarray(iop[:3], dtype=float)
+    coluna = np.asarray(iop[3:], dtype=float)
+    normal = np.cross(linha, coluna)
+    serie, estudo = generate_uid(), generate_uid()
+    for k in range(n):
+        ds = Dataset()
+        ds.file_meta = FileMetaDataset()
+        ds.SOPClassUID = u"1.2.840.10008.5.1.4.1.1.4"
+        ds.SOPInstanceUID = generate_uid()
+        ds.file_meta.MediaStorageSOPClassUID = ds.SOPClassUID
+        ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
+        ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+        ds.Modality = u"MR"
+        ds.PatientName = u"FANTOMA^RM"
+        ds.PatientID = u"FANTOMA_RM"
+        ds.StudyInstanceUID = estudo
+        ds.SeriesInstanceUID = serie
+        ds.FrameOfReferenceUID = estudo
+        ds.InstanceNumber = k + 1
+        ds.ImagePositionPatient = [float(v) for v in
+                                   np.array([-20.0, -30.0, 10.0]) + 3.0 * k * normal]
+        ds.ImageOrientationPatient = [float(v) for v in iop]
+        ds.PixelSpacing = [1.0, 1.0]
+        ds.SliceThickness = 3.0
+        ds.Rows = ds.Columns = lado
+        ds.SamplesPerPixel = 1
+        ds.PhotometricInterpretation = u"MONOCHROME2"
+        ds.BitsAllocated = ds.BitsStored = 16
+        ds.HighBit = 15
+        ds.PixelRepresentation = 0
+        img = np.full((lado, lado), 300 + 10 * k, dtype=np.uint16)
+        if pico:
+            img[lado // 2, lado // 2] = pico
+        ds.PixelData = img.tobytes()
+        pydicom.dcmwrite(os.path.join(pasta, u"MR_%02d.dcm" % k), ds,
+                         enforce_file_format=True)
+    return serie
+
+
+def teste_a_rm_abre_no_visor():
+    secao(u"a RM (axial e sagital) abre no «Ver segmentação»: a série não é "
+          u"filtrada como TC")
+    import numpy as np
+    import radai_batch
+    import radai_thumbnail
+    import radai_viewseg as V
+    base = tempfile.mkdtemp(prefix=u"radai_vs_rm_")
+    try:
+        app, cli = _app()
+        for rotulo, iop in ((u"axial", (1, 0, 0, 0, 1, 0)),
+                            (u"sagital", (0, 1, 0, 0, 0, -1))):
+            pasta = os.path.join(base, rotulo)
+            uid = _serie_rm(pasta, iop, pico=40000)
+            todos = [os.path.join(pasta, f) for f in sorted(os.listdir(pasta))]
+            checar(u"(isca) %s: o filtro de antes (modalidade CT) não acha "
+                   u"nenhum corte da RM" % rotulo,
+                   len(radai_batch._so_da_serie(todos, uid)) == 0)
+            ct, img = radai_batch._abrir_ct(pasta, uid)
+            checar(u"%s: a RM abre com os oito cortes" % rotulo,
+                   tuple(ct.shape) == (8, 32, 32), str(ct.shape))
+            checar(u"%s: o pixel acima de 32767 satura e não dá a volta "
+                   u"para negativo" % rotulo,
+                   int(ct.max()) == 32767 and int(ct.min()) >= 0,
+                   u"%d %d" % (int(ct.min()), int(ct.max())))
+            b = radai_thumbnail.bilhete(pasta, uid)
+            V._MODALIDADE[b] = u"MR"
+            V._SERIE[u"chave"] = None
+            f = cli.get(u"/api/verseg/forma", params={u"b": b}).json()
+            checar(u"%s: /api/verseg/forma responde a forma, sem HU" % rotulo,
+                   f.get(u"forma") == [8, 32, 32] and f.get(u"hu") is False,
+                   str(f))
+            r = cli.get(u"/api/verseg/ct", params={u"b": b, u"corte": 4})
+            checar(u"%s: /api/verseg/ct devolve o PNG do corte (o «não "
+                   u"consegui carregar a imagem deste corte» de campo)" % rotulo,
+                   r.status_code == 200
+                   and r.content[:8] == b"\x89PNG\r\n\x1a\n",
+                   u"%s %s" % (r.status_code, r.headers.get(u"X-RadAI-Erro")))
+        V._SERIE[u"chave"] = None
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def main():
     print(u"=" * 68)
     print(u"test_verseg | o «Ver segmentação» da v8.4")
@@ -948,10 +1120,12 @@ def main():
     testes = [teste_a_tela_segue_o_padrao, teste_a_tela_nao_cita_tps,
               teste_o_comparador_executado, teste_a_roda_vai_para_caudal,
               teste_o_acervo_e_o_seletor_no_js,
+              teste_a_pasta_e_a_varredura_da_casca,
               teste_as_bordas_do_mapa, teste_o_servidor,
               teste_os_conjuntos_ao_lado_abrem,
               teste_o_carregamento_religado_nao_some,
-              teste_as_mascaras_da_serie]
+              teste_as_mascaras_da_serie,
+              teste_a_rm_abre_no_visor]
     import traceback
     for t in testes:
         try:

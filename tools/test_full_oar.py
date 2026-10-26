@@ -173,8 +173,8 @@ def teste_o_oar_e_uma_selecao_exata_do_full():
             for n in no)
         checar(u"e as observacoes (densidade, ressalva, descricao) tambem",
                obs_iguais)
-        checar(u"o OAR e o entregue: rotulo `RadAI_OAR`",
-               oar.StructureSetLabel == "RadAI_OAR", oar.StructureSetLabel)
+        checar(u"o OAR e o entregue: rotulo `RadAI_STUDY`",
+               oar.StructureSetLabel == "RadAI_STUDY", oar.StructureSetLabel)
         checar(u"  e `UNAPPROVED` (regra 1)",
                oar.ApprovalStatus == "UNAPPROVED")
         _forjado = os.path.join(base, "full_aprovado.dcm")
@@ -193,12 +193,23 @@ def teste_o_oar_e_uma_selecao_exata_do_full():
         checar(u"  e serie 900, a do entregue", int(oar.SeriesNumber) == 900)
         checar(u"  e o nome e a descricao do entregue, com a versao DELE",
                str(oar.StructureSetName).startswith("RadAI auto-contorno")
-               and "Radioterapia.ai_OAR" in str(oar.StructureSetDescription)
-               and "material de estudo" not in str(oar.StructureSetDescription),
+               and "RadAI_STUDY" in str(oar.StructureSetDescription)
+               and "material de revisao" not in str(oar.StructureSetDescription),
                str(oar.StructureSetDescription)[:160])
-        checar(u"o FULL e estudo: `STUDY_full`, serie 901",
-               full.StructureSetLabel == "STUDY_full"
+        checar(u"o FULL nao e o entregue: `RadAI_FULL`, serie 901",
+               full.StructureSetLabel == "RadAI_FULL"
                and int(full.SeriesNumber) == 901)
+        _novo = {"oar": "RadAI_STUDY", "full": "RadAI_FULL"}
+        _velhos = []
+        for _cod, _antigo in (("oar", "RadAI_OAR"), ("full", "STUDY_full")):
+            _v = pydicom.dcmread(r[_cod])
+            _v.StructureSetLabel = _antigo
+            _velhos.append(_v.StructureSetLabel != _novo[_cod]
+                           and RS.cod_do_rotulo(_v.StructureSetLabel) == _cod)
+        checar(u"ISCA: o conjunto com o rotulo antigo (`RadAI_OAR`, "
+               u"`STUDY_full`) reprova as duas checagens de cima, e o leitor "
+               u"ainda o reconhece pelo cod de hoje (o acervo nao se regrava)",
+               all(_velhos), str(_velhos))
         checar(u"UIDs proprios: o OAR nao e o mesmo objeto que o FULL",
                oar.SOPInstanceUID != full.SOPInstanceUID
                and oar.SeriesInstanceUID != full.SeriesInstanceUID
@@ -260,7 +271,7 @@ def teste_o_full_faz_o_pos_processamento():
         finally:
             E.build_rtstruct = velho
         full_nomes = set(r["estruturas_full"])
-        k_full = [k for k in chamadas if k.get("rotulo") == "STUDY_full"]
+        k_full = [k for k in chamadas if k.get("rotulo") == "RadAI_FULL"]
         checar(u"o FULL e montado UMA vez, com o desconto do cisto (Q6)",
                len(k_full) == 1 and k_full[0].get("descontar") is True,
                str([(k.get("rotulo"), k.get("descontar")) for k in chamadas]))
@@ -701,11 +712,18 @@ def teste_os_plugins_tem_arquivo_proprio():
             if alvo:
                 ds = pydicom.dcmread(os.path.join(dest, alvo[0]))
                 nomes = [str(x.ROIName) for x in ds.StructureSetROISequence]
-                checar(u"  com o sufixo `%s` e o rotulo `STUDY_%s`"
-                       % (reg["sufixo"], cod),
+                checar(u"  com o sufixo `%s` e o rotulo `%s`"
+                       % (reg["sufixo"], RS.rotulo_dicom(cod)),
                        all(n.endswith(reg["sufixo"]) for n in nomes)
-                       and ds.StructureSetLabel == "STUDY_" + cod,
+                       and ds.StructureSetLabel == RS.rotulo_dicom(cod),
                        u"%s | %s" % (nomes, ds.StructureSetLabel))
+                checar(u"  o rotulo e o de comparacao novo, `RadAI_%s`; o da "
+                       u"geracao anterior (`STUDY_%s`) reprovaria, e continua "
+                       u"legivel" % (cod.upper(), cod),
+                       ds.StructureSetLabel == u"RadAI_" + cod.upper()
+                       and (u"STUDY_" + cod) != ds.StructureSetLabel
+                       and RS.cod_do_rotulo(u"STUDY_" + cod) == cod,
+                       ds.StructureSetLabel)
                 checar(u"  e reconhecido, e NUNCA como o entregue",
                        RS.do_arquivo(alvo[0])["cod"] == cod
                        and not RS.e_entregue(alvo[0]))
@@ -806,7 +824,7 @@ def teste_a_grade_que_falta_e_dita():
         m["liver"][10:20, 40:80, 40:80] = True
         E.build_rtstruct(serie, m, versao_worker="t",
                          log=lambda t: linhas.append(str(t)),
-                         suavizar_mm=1.5, rotulo="STUDY_nv")
+                         suavizar_mm=1.5, rotulo="RadAI_NV")
         checar(u"um conjunto de estudo sai, e o log DIZ que a grade faltou",
                any("NAO carreguei a grade" in l for l in linhas),
                u" | ".join(linhas[:3]))
@@ -825,17 +843,15 @@ def teste_a_grade_que_falta_e_dita():
 def teste_a_mascara_espelhada_nao_entra():
     secao(u"o `add_roi` que falha nao tenta de novo com a mascara espelhada")
     base = tempfile.mkdtemp(prefix="radai_t_fulloar_")
-    import rt_utils
-    classe = rt_utils.RTStruct
-    velho = classe.add_roi
+    velho = E._adicionar_roi
     chamadas = []
     try:
         serie = _serie(base)
 
-        def _recusa(self, *a, **k):
-            chamadas.append(k.get("name"))
+        def _recusa(rt, mb, nome, cor):
+            chamadas.append(nome)
             raise ValueError("recusada de proposito")
-        classe.add_roi = _recusa
+        E._adicionar_roi = _recusa
         linhas = []
         m = {"liver": np.zeros((Z, Y, X), bool)}
         m["liver"][10:20, 40:80, 40:80] = True
@@ -847,7 +863,7 @@ def teste_a_mascara_espelhada_nao_entra():
                any("o add_roi recusou" in l and "recusada de proposito" in l
                    for l in linhas))
     finally:
-        classe.add_roi = velho
+        E._adicionar_roi = velho
         shutil.rmtree(base, ignore_errors=True)
 
 
@@ -1411,8 +1427,7 @@ def teste_a_copia_temporaria_do_oar_fast_e_apagada():
         _rodar(base, serie, modo="auto")
         do_full = [getattr(p, "caminho", p) for m, p in vistos if m != "fast"]
         pasta_full = os.path.dirname(str(do_full[-1])) if do_full else ""
-        checar(u"a pasta do FULL NAO leva o prefixo do entregue (a faxina "
-               u"nao a alcanca)",
+        checar(u"a pasta do FULL NAO leva o prefixo do entregue",
                pasta_full and not os.path.basename(pasta_full).startswith(
                    E.PREFIXO_TEMP_DO_OAR), os.path.basename(pasta_full))
         shutil.rmtree(pasta_full, ignore_errors=True)
@@ -1450,7 +1465,7 @@ def teste_a_copia_temporaria_do_oar_fast_e_apagada():
         import types
         _real = E.tempfile
         E.tempfile = types.SimpleNamespace(
-            mkdtemp=lambda *a, **k: _real.mkdtemp(),
+            mkdtemp=lambda *a, **k: _real.mkdtemp(prefix="radai_t_fulloar_"),
             gettempdir=_real.gettempdir)
         try:
             _rodar(base, serie, modo="fast")
@@ -1467,6 +1482,120 @@ def teste_a_copia_temporaria_do_oar_fast_e_apagada():
     finally:
         E.build_rtstruct = velho
         RO._apagar_temp_do_oar = velho_ap
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def _pastas_do_rs():
+    try:
+        return set(n for n in os.listdir(tempfile.gettempdir())
+                   if n.startswith(E.PREFIXO_TEMP_DO_RS))
+    except OSError:
+        return set()
+
+
+def teste_a_copia_temporaria_do_full_e_dos_conjuntos_e_apagada():
+    secao(u"a copia temporaria do FULL e dos outros conjuntos tem o prefixo "
+          u"da faxina e e apagada")
+    base = tempfile.mkdtemp(prefix="radai_t_fulloar_")
+    velho = E.build_rtstruct
+    velho_rs = RO._apagar_temp_do_rs
+    velho_salva = E._salvar_sem_escrever_no_console
+    velho_sh = E.shutil
+    vistos = []
+
+    def _espia(*a, **k):
+        r = velho(*a, **k)
+        vistos.append(getattr(r[0], "caminho", r[0]))
+        return r
+    try:
+        serie = _serie(base)
+        E.build_rtstruct = _espia
+        sd, r, _l, _d = _rodar(base, serie)
+        pasta = os.path.dirname(str(vistos[0])) if vistos else ""
+        checar(u"a pasta temporaria do FULL comeca por `radai_` (a faxina do "
+               u"arranque a conhece)",
+               E.PREFIXO_TEMP_DO_RS.startswith(u"radai_")
+               and os.path.basename(pasta).startswith(E.PREFIXO_TEMP_DO_RS),
+               os.path.basename(pasta))
+        checar(u"  e nao existe mais depois da copia, com o FULL na pasta "
+               u"da serie", pasta and not os.path.exists(pasta)
+               and r.get("full") and os.path.isfile(r["full"]), pasta)
+        vistos[:] = []
+        alvo_ts = sd.totalsegmentator_cru(_cruas())
+        pasta_ts = os.path.dirname(str(vistos[-1])) if vistos else ""
+        checar(u"a copia de outro conjunto (o cru do TotalSegmentator) sai "
+               u"logo depois de copiada",
+               alvo_ts and os.path.isfile(alvo_ts) and pasta_ts
+               and os.path.basename(pasta_ts).startswith(E.PREFIXO_TEMP_DO_RS)
+               and not os.path.exists(pasta_ts), pasta_ts)
+
+        def _sem_memoria_no_full(rt, caminho):
+            if os.path.basename(os.path.dirname(str(caminho))).startswith(
+                    E.PREFIXO_TEMP_DO_RS):
+                raise MemoryError()
+            return velho_salva(rt, caminho)
+        E._salvar_sem_escrever_no_console = _sem_memoria_no_full
+        vistos[:] = []
+        antes = _pastas_do_rs()
+        try:
+            _sd3, r3, _l3, _d3 = _rodar(base, serie)
+        finally:
+            E._salvar_sem_escrever_no_console = velho_salva
+        pasta3 = os.path.dirname(str(vistos[0])) if vistos else ""
+        checar(u"o FULL que falha ao gravar (serie parcial) tambem nao deixa "
+               u"a copia", (r3.get("parcial") or {}).get("conjunto") == "full"
+               and pasta3 and not os.path.exists(pasta3),
+               u"%s %s" % (r3.get("parcial"), pasta3))
+
+        def _sem_memoria(rt, caminho):
+            raise MemoryError()
+        E._salvar_sem_escrever_no_console = _sem_memoria
+        try:
+            nada = sd.totalsegmentator_cru(_cruas())
+        finally:
+            E._salvar_sem_escrever_no_console = velho_salva
+        checar(u"o conjunto que falha ao gravar nao deixa a pasta temporaria "
+               u"(o motor a apaga antes de levantar)",
+               nada is None and not (_pastas_do_rs() - antes),
+               str(sorted(_pastas_do_rs() - antes)))
+
+        class _ShutilSemApagar(object):
+            def __getattr__(self, nome):
+                return getattr(velho_sh, nome)
+
+            def rmtree(self, *a, **k):
+                return None
+        E.shutil = _ShutilSemApagar()
+        E._salvar_sem_escrever_no_console = _sem_memoria
+        try:
+            sd.totalsegmentator_cru(_cruas())
+        finally:
+            E._salvar_sem_escrever_no_console = velho_salva
+            E.shutil = velho_sh
+        sobra = _pastas_do_rs() - antes
+        checar(u"ISCA: sem o motor apagar na falha, a pasta temporaria sobra "
+               u"(a checagem de cima reprovaria)", bool(sobra), str(sobra))
+        for n in sobra:
+            shutil.rmtree(os.path.join(tempfile.gettempdir(), n),
+                          ignore_errors=True)
+
+        RO._apagar_temp_do_rs = lambda *a, **k: None
+        vistos[:] = []
+        _rodar(base, serie)
+        sd.totalsegmentator_cru(_cruas())
+        sobram = [os.path.dirname(str(p)) for p in vistos
+                  if os.path.exists(os.path.dirname(str(p)))]
+        checar(u"ISCA: sem a faxina da saida, a copia do FULL e a do cru "
+               u"sobram no temporario (reprovaria)",
+               len(sobram) == 2 and all(os.path.basename(p).startswith(
+                   E.PREFIXO_TEMP_DO_RS) for p in sobram), str(sobram))
+        for p in sobram:
+            shutil.rmtree(p, ignore_errors=True)
+    finally:
+        E.build_rtstruct = velho
+        RO._apagar_temp_do_rs = velho_rs
+        E._salvar_sem_escrever_no_console = velho_salva
+        E.shutil = velho_sh
         shutil.rmtree(base, ignore_errors=True)
 
 
@@ -1916,8 +2045,8 @@ def teste_o_pescoco_sem_niveis():
                "LNL_UNION_ai" not in full
                and "parotid_lnl_left" not in sd.meta_do_full["mascaras"])
         o_ts = _obs_do_arquivo(r["full"]).get("Parotid_L_ts") or u""
-        checar(u"  a descricao da Parotid_L_ts diz que o OAR saiu sem ela",
-               u"so do nivel VIII" in o_ts and u"OAR saiu sem ela" in o_ts,
+        checar(u"  a descricao da Parotid_L_ts diz que o STUDY saiu sem ela",
+               u"so do nivel VIII" in o_ts and u"STUDY saiu sem ela" in o_ts,
                o_ts[:200])
         checar(u"  e o log diz por que ela nao entra no OAR",
                any(u"Parotid_L_ts nao entra" in l
@@ -2269,7 +2398,7 @@ def teste_a_densidade_fala_em_todo_arquivo_que_a_roda():
         checar(u"o conjunto de comparacao saiu", bool(alvo) and
                os.path.isfile(alvo))
         checar(u"e a densidade FALOU nele, com o rotulo do conjunto",
-               any(l.startswith(u"STUDY_nv: sustentacao:") for l in linhas),
+               any(l.startswith(u"RadAI_NV: sustentacao:") for l in linhas),
                u" | ".join(l for l in linhas if u"sustenta" in l)[:200])
         checar(u"e o tempo de cada passo saiu no log",
                any(u"por passo:" in l and u"densidade" in l for l in linhas),
@@ -2292,7 +2421,7 @@ def teste_a_densidade_fala_em_todo_arquivo_que_a_roda():
             _P.conferir_sustentacao = velha
         checar(u"ISCA: o FULL fala sem prefixo, como sempre",
                any(l.startswith(u"sustentacao:") for l in l2)
-               and not any(l.startswith(u"STUDY_full: sustentacao")
+               and not any(l.startswith(u"RadAI_FULL: sustentacao")
                            for l in l2))
         checar(u"na cadeia do entregue cada estrutura e medida UMA vez (o OAR "
                u"mede as dele, o FULL so as que faltam), e nenhuma no TS cru",
@@ -2348,7 +2477,7 @@ def teste_o_cru_nao_diz_que_leu_a_serie():
         juntas = RO.UniaoDeCruas([m for m in _cruas().values() if m])
         E.build_rtstruct(serie, juntas, tasks=["total_v3"],
                          versao_worker="bateria", cru=True, suavizar_mm=0.0,
-                         meta=meta_cru, rotulo="STUDY_ts",
+                         meta=meta_cru, rotulo="RadAI_TS",
                          sufixo_do_conjunto="_ts")
         et_cru = [n for n, _s in meta_cru.get("etapas") or []]
         checar(u"o cru NAO anota a leitura da serie (ele nao le)",
@@ -2846,14 +2975,13 @@ def teste_a_parede_na_cadeia_um_contorno_e_sem_vizinhos():
 def teste_a_recusada_pelo_add_roi_nao_e_julgada():
     secao(u"a recusada pelo add_roi nao e julgada")
     import inspect as _insp
-    import rt_utils.rtstruct as _RTS
     extra = (("spleen", (2, 10, 34, 42, 60, 68)),)
-    _orig = _RTS.RTStruct.add_roi
+    _orig = E._adicionar_roi
 
-    def _recusa(self, *a, **k):
-        if str(k.get("name") or u"").lower().startswith("spleen"):
-            raise ValueError("bateria: recusei %s" % k.get("name"))
-        return _orig(self, *a, **k)
+    def _recusa(rt, mb, nome, cor):
+        if str(nome or u"").lower().startswith("spleen"):
+            raise ValueError("bateria: recusei %s" % nome)
+        return _orig(rt, mb, nome, cor)
 
     def _falam(linhas):
         return [l for l in linhas if "spleen" in l
@@ -2868,7 +2996,7 @@ def teste_a_recusada_pelo_add_roi_nao_e_julgada():
 
     base = tempfile.mkdtemp(prefix="radai_t_fulloar_")
     velho = E.build_rtstruct
-    _RTS.RTStruct.add_roi = _recusa
+    E._adicionar_roi = _recusa
     try:
         serie = _serie(base)
         _sd, _r, linhas, _d = _rodar(base, serie, cruas=_cruas(extra=extra))
@@ -2901,7 +3029,7 @@ def teste_a_recusada_pelo_add_roi_nao_e_julgada():
                str(_falam(l2)))
     finally:
         E.build_rtstruct = velho
-        _RTS.RTStruct.add_roi = _orig
+        E._adicionar_roi = _orig
         shutil.rmtree(base, ignore_errors=True)
 
 
@@ -3827,7 +3955,7 @@ def teste_a_ilha_em_revisao_so_de_quem_saiu_no_arquivo():
         rev_fast = [x["nome"] for x in
                     (sd2.meta_do_fast or {}).get("ilhas_em_revisao") or []]
         checar(u"FAST: o peitoral NAO esta em revisao -- ele nao vai ao "
-               u"RadAI_OAR_Fast", "pectoralis_major_left" not in rev_fast
+               u"RadAI_STUDY_Fast", "pectoralis_major_left" not in rev_fast
                and not any(u"Musc_PecMaj" in n or u"pectoralis" in n
                            for n in r2.get("estruturas") or []),
                u"%s | %s" % (rev_fast, r2.get("estruturas")))
@@ -3972,6 +4100,14 @@ def _coracao_com_a_cava_por_baixo():
     return heart, cava
 
 
+def _pericardio_sem_a_cava_por_baixo():
+    forma = (20, 64, 64)
+    peri = np.zeros(forma, bool)
+    peri[7:17, 10:41, 10:41] = True
+    peri[3:7, 12:25, 12:25] = True
+    return peri
+
+
 def teste_o_heart_ai_sem_a_cava_inferior_por_baixo():
     secao(u"o Heart_ai: no corte com dois contornos sai o que cruza a veia "
           u"cava inferior e fica o do apice; os 3 mm a mais valem na saida")
@@ -3992,7 +4128,7 @@ def teste_o_heart_ai_sem_a_cava_inferior_por_baixo():
     def _rodar_coracao(suav=1.5, cava_na_receita=False, isca=False,
                        sem_a_mais=False):
         heart, cava = _coracao_com_a_cava_por_baixo()
-        m = {"heart": heart, "pericardium": heart.copy()}
+        m = {"heart": heart, "pericardium": _pericardio_sem_a_cava_por_baixo()}
         sp = _specs(sem_a_mais)
         if cava_na_receita:
             sp["heart"]["cava_inferior"] = cava
@@ -4002,7 +4138,7 @@ def teste_o_heart_ai_sem_a_cava_inferior_por_baixo():
         velho = E.sem_a_cava_nos_cortes
         try:
             if isca:
-                E.sem_a_cava_nos_cortes = lambda mm, c, gg: (mm, 0)
+                E.sem_a_cava_nos_cortes = lambda mm, c, gg, **_k: (mm, 0)
             E._suavizar_construcoes(m, g, suav, sp, detalhe, [], log.append)
         finally:
             E.sem_a_cava_nos_cortes = velho
@@ -4059,74 +4195,160 @@ def teste_o_heart_ai_sem_a_cava_inferior_por_baixo():
         shutil.rmtree(base, ignore_errors=True)
 
 
-def _coracao_com_a_cava_fundida():
-    forma = (20, 64, 64)
-    corpo = np.zeros(forma, bool)
-    corpo[10:18, 10:41, 10:41] = True
-    apice = np.zeros(forma, bool)
-    apice[4:10, 12:25, 12:25] = True
-    ponte = np.zeros(forma, bool)
-    ponte[7:10, 20:37, 20:37] = True
-    cava = np.zeros(forma, bool)
-    cava[0:13, 34:41, 34:41] = True
-    janela = np.zeros(forma, bool)
-    janela[1:18] = True
-    heart = corpo | apice | ponte | (cava & janela)
-    modelo = (corpo | apice) & ~cava
-    return heart, cava, modelo, apice
-
-
-def teste_o_heart_ai_sem_a_cava_fundida_nem_o_corte_so_de_cava():
-    secao(u"o Heart_ai: a cava fundida ao apice num contorno so sai, o corte "
-          u"so de cava sai vazio, a juncao com o atrio fica e o apice nunca "
-          u"sai")
-    import radai_geom
+def _v86_sem_a_cava(m, cava, modelo, grade):
     from scipy import ndimage
-    g = radai_geom.Grade((3.0, 2.0, 2.0))
+    import radai_geom
+    eixo, _s = grade.eixo_sinal("inf")
     viz = np.ones((3, 3), bool)
+    m = np.asarray(m, bool)
+    cava = np.asarray(cava, bool)
+    novo = m.copy()
+    for k in range(m.shape[eixo]):
+        fatia = np.take(novo, k, axis=eixo)
+        cv = np.take(cava, k, axis=eixo)
+        if not (fatia & cv).any():
+            continue
+        rot, n = ndimage.label(fatia, viz)
+        if n < 2:
+            continue
+        tam = np.bincount(rot.ravel(), minlength=n + 1)
+        comum = np.bincount(rot[fatia & cv].ravel(), minlength=n + 1)
+        cruzam = dict((j, comum[j] / float(tam[j])) for j in range(1, n + 1)
+                      if comum[j])
+        if len(cruzam) == n:
+            del cruzam[min(cruzam, key=cruzam.get)]
+        idx = [slice(None)] * m.ndim
+        idx[eixo] = k
+        novo[tuple(idx)] = fatia & ~np.isin(rot, list(cruzam))
+    if modelo is None:
+        return novo
+    cava = radai_geom.expandir(
+        cava, dict((l, 1.0) for l in ("ant", "post", "esq", "dir")), grade)
+    modelo = np.asarray(modelo, bool)
+    for k in range(m.shape[eixo]):
+        fatia = np.take(novo, k, axis=eixo)
+        cv = np.take(cava, k, axis=eixo)
+        if not (fatia & cv).any():
+            continue
+        mh = np.take(modelo, k, axis=eixo) & fatia
+        if (ndimage.binary_dilation(cv, viz)
+                & np.take(modelo, k, axis=eixo)).any():
+            continue
+        rot, _n = ndimage.label(fatia, viz)
+        regiao = np.isin(rot, [j for j in np.unique(rot[fatia & cv]) if j])
+        resto = regiao & ~(cv & ~mh)
+        rot2, _n2 = ndimage.label(resto, viz)
+        vivos = [j for j in np.unique(rot2[resto & mh]) if j]
+        fica = np.isin(rot2, vivos) if vivos else np.zeros_like(resto)
+        idx = [slice(None)] * m.ndim
+        idx[eixo] = k
+        novo[tuple(idx)] = fatia & ~(regiao & ~fica)
+    return novo
 
-    def _pedacos(h, z):
-        return ndimage.label(h[z], viz)[1]
 
-    def _sem_a_cava(h, cava, apice):
-        fundida = range(7, 10)
-        so_cava = range(1, 4)
-        return {
-            u"nos cortes 7 a 9 (cava fundida ao apice), nada da cava":
-                not (h[7:10] & cava[7:10]).any(),
-            u"  e um contorno por corte, o do apice":
-                all(_pedacos(h, z) == 1 for z in fundida),
-            u"nos cortes 1 a 3 (so a cava), o corte sai vazio":
-                not h[1:4].any() and all(_pedacos(h, z) == 0
-                                         for z in so_cava),
-            u"o apice nunca sai (todos os pixels dele ficam)":
-                not (apice & ~h).any(),
-            u"na juncao (cortes 10 a 12) a cava fica (o atrio direito)":
-                (h[10:13] & cava[10:13]).any(),
-        }
-    heart, cava, modelo, apice = _coracao_com_a_cava_fundida()
-    h1, _t1 = E.sem_a_cava_nos_cortes(heart, cava, g)
-    h2, tirados, vazios = E.sem_a_cava_fundida(h1, cava, modelo, g)
-    for rot, ok in sorted(_sem_a_cava(h2, cava, apice).items()):
-        checar(u"[direto] %s" % rot, ok)
-    checar(u"[direto]   e a funcao conta o que saiu e os cortes vazios",
-           tirados > 0 and vazios == 3, u"%d voxels, %d vazios"
-           % (tirados, vazios))
-    isca = _sem_a_cava(h1, cava, apice)
-    checar(u"ISCA: so com a regra dos dois contornos, a cava fundida e o "
-           u"corte so de cava ficam (as checagens de cima reprovariam)",
-           not isca[u"nos cortes 7 a 9 (cava fundida ao apice), nada da "
-                    u"cava"]
-           and not isca[u"nos cortes 1 a 3 (so a cava), o corte sai vazio"],
-           str(dict((k[:30], v) for k, v in isca.items())))
-    h_sem, _t, _v = E.sem_a_cava_fundida(h1, cava, None, g)
-    checar(u"sem o coracao do modelo nada muda (sem ele nao ha como achar a "
-           u"juncao)", np.array_equal(h_sem, h1))
-    modelo_junto = modelo.copy()
-    modelo_junto[7:10, 30:34, 30:34] = True
-    h_j, _t, _v = E.sem_a_cava_fundida(h1, cava, modelo_junto, g)
-    checar(u"a cava que encosta no coracao do modelo e juncao, e fica",
-           (h_j[7:10] & cava[7:10]).any())
+def _tres_casos_da_cava():
+    import radai_geom
+    g = radai_geom.Grade((3.0, 1.0, 1.0))
+    forma = (10, 120, 120)
+    yy, xx = np.mgrid[0:120, 0:120]
+
+    def disco(cy, cx, r):
+        return (yy - cy) ** 2 + (xx - cx) ** 2 <= r * r
+
+    peri = np.zeros(forma, bool)
+    modelo = np.zeros(forma, bool)
+    for z in range(2, 10):
+        peri[z] = disco(55, 55, 30)
+        modelo[z] = disco(50, 62, 8)
+    peri[3] |= disco(22, 40, 5) | ((yy >= 22) & (yy <= 32)
+                                   & (xx >= 37) & (xx <= 43))
+    peri[1] = disco(50, 80, 12)
+    modelo[1] = disco(50, 82, 5)
+    lumen = np.zeros(forma, bool)
+    lumen[0:4] = disco(60, 28, 6)
+    cava = radai_geom.expandir(lumen, 1.0, g)
+    frag = np.zeros(forma, bool)
+    frag[2] = disco(22, 40, 2)
+    eso = np.zeros(forma, bool)
+    eso[:] = disco(95, 55, 5)
+    der = np.zeros(forma, bool)
+    der[5:8, 80:100, 45:66] = True
+    heart = peri | modelo | cava | frag
+    masks = {"inferior_vena_cava": cava, "pericardium": peri,
+             "heart_model": modelo, "esophagus": eso,
+             "pericardial_effusion": der}
+    return g, heart, masks, frag
+
+
+def _checagens_dos_tres_casos(novo, heart, masks, frag):
+    prot = masks["pericardium"] | masks["heart_model"]
+    cava, eso = masks["inferior_vena_cava"], masks["esophagus"]
+    der = masks["pericardial_effusion"]
+    return {
+        u"nenhum pixel do pericardio nem do coracao do modelo sai":
+            not (heart & prot & ~novo).any(),
+        u"corte so de cava (0): sai vazio": not novo[0].any(),
+        u"dois contornos, apice e cava separados (1): a cava sai e o apice "
+        u"fica": not (novo[1] & cava[1] & ~prot[1]).any()
+            and not (prot[1] & ~novo[1]).any(),
+        u"o saco com a cava encostada e um ponto solto (2): o saco fica "
+        u"inteiro e o ponto sai": not (prot[2] & ~novo[2]).any()
+            and not (novo[2] & frag[2]).any(),
+        u"a cava fundida ao saco (3): sem edentacao, so sai a cava fora do "
+        u"pericardio": not (prot[3] & ~novo[3]).any()
+            and not (novo[3] & cava[3] & ~prot[3]).any(),
+        u"o esofago sai (o derrame o trazia de volta)":
+            not (novo & eso).any(),
+        u"  e o derrame fora do esofago fica": not (der & ~eso & ~novo).any(),
+    }
+
+
+def teste_o_heart_ai_os_tres_casos_da_cava_e_sem_o_esofago():
+    secao(u"o Heart_ai: nunca perde pixel do pericardio nem do Heart_Model; a "
+          u"cava sai so onde esta separada do coracao; nenhum corte descarta o "
+          u"contorno com pericardio; o esofago sai")
+    from scipy import ndimage
+    g, heart, masks, frag = _tres_casos_da_cava()
+    log = []
+    novo, _desc, info = E._acabamento_do_coracao("heart", heart, dict(masks),
+                                                 g, log=log.append)
+    novo = np.asarray(novo, bool)
+    for rot, ok in sorted(_checagens_dos_tres_casos(novo, heart, masks,
+                                                   frag).items()):
+        checar(u"[acabamento] %s" % rot, ok)
+    checar(u"[acabamento]   um volume so",
+           ndimage.label(novo)[1] == 1, str(ndimage.label(novo)[1]))
+    checar(u"[acabamento]   a medida diz quanto da cava saiu e o corte que "
+           u"ficou vazio", info.get("cava_inferior_tirada_cm3", 0) > 0
+           and info.get("cortes_so_de_cava") == 1, str(info))
+    checar(u"[acabamento]   e o log diz a cava e o esofago",
+           any(u"veia cava inferior saiu" in l for l in log)
+           and any(u"esofago" in l for l in log), str(log)[:300])
+    velho_c, velho_f = E.sem_a_cava_nos_cortes, E.FORA_DO_PERICARDIO
+    try:
+        E.sem_a_cava_nos_cortes = (
+            lambda mm, c, gg, protegido=None, modelo=None:
+            (_v86_sem_a_cava(mm, c, modelo, gg), 0))
+        E.FORA_DO_PERICARDIO = ()
+        vi, _d, _i = E._acabamento_do_coracao("heart", heart, dict(masks), g)
+    finally:
+        E.sem_a_cava_nos_cortes, E.FORA_DO_PERICARDIO = velho_c, velho_f
+    isca = _checagens_dos_tres_casos(np.asarray(vi, bool), heart, masks, frag)
+    checar(u"ISCA: com as regras da v8.6, o saco sai e fica o ponto, a cava "
+           u"fundida morde o pericardio e o esofago fica (as checagens de "
+           u"cima reprovariam)",
+           not isca[u"nenhum pixel do pericardio nem do coracao do modelo "
+                    u"sai"]
+           and not isca[u"o saco com a cava encostada e um ponto solto (2): "
+                        u"o saco fica inteiro e o ponto sai"]
+           and not isca[u"a cava fundida ao saco (3): sem edentacao, so sai "
+                        u"a cava fora do pericardio"]
+           and not isca[u"o esofago sai (o derrame o trazia de volta)"],
+           str(dict((k[:24], v) for k, v in isca.items())))
+    h1, _t = E.sem_a_cava_nos_cortes(heart, masks["inferior_vena_cava"], g)
+    checar(u"sem o protegido (sem pericardio nem coracao do modelo), so a "
+           u"regra dos dois contornos vale: o contorno unico com a cava fica",
+           bool((h1[3] & masks["inferior_vena_cava"][3]).any()))
 
     def _specs():
         sp = {}
@@ -4137,50 +4359,440 @@ def teste_o_heart_ai_sem_a_cava_fundida_nem_o_corte_so_de_cava():
         return sp
 
     def _rodar(na_receita=False, isca=False):
-        heart, cava, modelo, apice = _coracao_com_a_cava_fundida()
-        m = {"heart": heart, "pericardium": heart.copy()}
+        _g, heart, masks, _frag = _tres_casos_da_cava()
+        m = dict(masks)
+        m["heart"] = heart
         sp = _specs()
         if na_receita:
-            sp["heart"]["cava_inferior"] = cava
-            sp["heart"]["coracao_do_modelo"] = modelo
-        else:
-            m["inferior_vena_cava"] = cava
-            m["heart_model"] = modelo
+            sp["heart"]["cava_inferior"] = m.pop("inferior_vena_cava")
+            sp["heart"]["coracao_do_modelo"] = m.pop("heart_model")
         log = []
-        velho = E.sem_a_cava_fundida
+        velho, velho_f = E.sem_a_cava_nos_cortes, E.FORA_DO_PERICARDIO
         try:
             if isca:
-                E.sem_a_cava_fundida = lambda mm, c, mo, gg: (mm, 0, 0)
+                E.sem_a_cava_nos_cortes = (
+                    lambda mm, c, gg, protegido=None, modelo=None:
+                    (_v86_sem_a_cava(mm, c, modelo, gg), 0))
+                E.FORA_DO_PERICARDIO = ()
             E._suavizar_construcoes(m, g, 1.5, sp, [], [], log.append)
         finally:
-            E.sem_a_cava_fundida = velho
-        return np.asarray(m["heart"], bool), cava, apice, log
+            E.sem_a_cava_nos_cortes, E.FORA_DO_PERICARDIO = velho, velho_f
+        return np.asarray(m["heart"], bool), log
+
+    nucleo = ndimage.binary_erosion(masks["pericardium"][3], iterations=6)
+
+    def _cadeia(h):
+        return {
+            u"o pericardio do corte 3 (a cava fundida) sem edentacao":
+                not (nucleo & ~h[3]).any(),
+            u"nada do esofago": not (h & masks["esophagus"]).any(),
+        }
     for rot, kw in ((u"cava e coracao do modelo nas mascaras", {}),
                     (u"os dois so na receita (o FAST)", {"na_receita": True})):
-        h, cava, apice, log = _rodar(**kw)
-        checar(u"[%s] suavizado, nada da cava nos cortes 1 a 9" % rot,
-               not (h[1:10] & cava[1:10]).any(),
-               u"%d voxels" % int((h[1:10] & cava[1:10]).sum()))
-        checar(u"[%s]   os cortes 1 e 2, so de cava, saem vazios" % rot,
-               not h[1:3].any(), str([int(h[z].sum()) for z in (1, 2)]))
-        checar(u"[%s]   o apice continua em todo corte dele" % rot,
-               all(h[z, 12:25, 12:25].any() for z in range(4, 10)))
-        checar(u"[%s]   e o log diz quanto saiu e quantos cortes ficaram "
-               u"vazios" % rot,
-               any(u"saiu do contorno unico" in l and u"ficaram vazios" in l
-                   for l in log), [l for l in log if u"cava" in l][:2])
-    hi, cava_i, _a, _l = _rodar(isca=True)
-    checar(u"ISCA: sem a regra nova, o Heart_ai suavizado leva a cava nos "
-           u"cortes 1 a 9", (hi[1:10] & cava_i[1:10]).any())
-    heart, cava, modelo, _apice = _coracao_com_a_cava_fundida()
-    m = {"heart": modelo.copy(), "inferior_vena_cava": cava,
-         "pericardium": heart.copy()}
+        h, log = _rodar(**kw)
+        for nome, ok in sorted(_cadeia(h).items()):
+            checar(u"[%s] suavizado: %s" % (rot, nome), ok)
+        checar(u"[%s]   e o log diz quanto da cava saiu" % rot,
+               any(u"veia cava inferior saiu" in l for l in log),
+               [l for l in log if u"cava" in l][:2])
+    hi, _l = _rodar(isca=True)
+    isca_c = _cadeia(hi)
+    checar(u"ISCA: com a regra da v8.6 na cadeia, a cava fundida morde o "
+           u"pericardio e o esofago fica", not any(isca_c.values()),
+           str(isca_c))
+    _g, heart, masks2, _frag = _tres_casos_da_cava()
+    m = {"heart": masks2["heart_model"].copy(),
+         "inferior_vena_cava": masks2["inferior_vena_cava"],
+         "pericardium": masks2["pericardium"]}
     _fora, meta = E.preparar_full(m, grade=g)
     spec = (meta.get("construcoes") or {}).get("heart") or {}
     checar(u"o preparo do FULL guarda na receita do Heart_ai a cava e o "
            u"coracao do modelo (o FAST os acha la)",
            spec.get("cava_inferior") is not None
            and spec.get("coracao_do_modelo") is not None, sorted(spec))
+
+
+def teste_a_tireoide_e_delgada():
+    secao(u"v8.7: a tireoide sem suavizacao, como os constritores (estruturas "
+          u"delgadas)")
+    import radai_geom
+    checar(u"a tireoide e os tres constritores estao nas delgadas",
+           {"thyroid_gland", "pharyngeal_constrictor_superior",
+            "pharyngeal_constrictor_middle",
+            "pharyngeal_constrictor_inferior"} <= set(E.ESTRUTURAS_DELGADAS))
+    checar(u"  e a suavizacao da tireoide e zero com qualquer SUAVIZAR_MM",
+           all(E.suavizacao_de("thyroid_gland", s) == 0.0
+               for s in (1.5, 3.0, 6.0)))
+    g = radai_geom.Grade((3.0, 1.0, 1.0))
+    tire = np.zeros((10, 60, 60), bool)
+    tire[2:8, 20:40, 10:50] = True
+    tire[2:8, 26:40, 25:35] = False
+
+    def _suaviza():
+        m = {"thyroid_gland": tire.copy()}
+        E._suavizar_individuais(m, ["thyroid_gland"], g, 1.5, [], [])
+        return np.asarray(m["thyroid_gland"], bool)
+    checar(u"a tireoide sai como o modelo a deu, istmo e bordas inteiros",
+           np.array_equal(_suaviza(), tire))
+    velho = E.SUAVIZACAO.get("thyroid_gland")
+    E.SUAVIZACAO["thyroid_gland"] = 2.5
+    try:
+        mi = _suaviza()
+    finally:
+        E.SUAVIZACAO["thyroid_gland"] = velho
+    checar(u"ISCA: com os 2,5 mm do parenquima, a tireoide mudaria (a "
+           u"checagem de cima reprovaria)", not np.array_equal(mi, tire))
+
+
+def _cervicais_com_clavicula():
+    import radai_hnlnl as HN
+    ivb_l = np.zeros((Z, Y, X), bool)
+    ivb_l[24:29, 38:48, 72:84] = True
+    ivb_r = np.zeros((Z, Y, X), bool)
+    ivb_r[24:29, 38:48, 40:52] = True
+    v_l = np.zeros((Z, Y, X), bool)
+    v_l[24:29, 40:45, 85:90] = True
+    niv = HN.NiveisDaSerie({"Lvl_IVb_L": ivb_l, "Lvl_IVb_R": ivb_r,
+                            "Lvl_V_L": v_l,
+                            HN.NOME_DA_UNIAO: ivb_l | ivb_r | v_l})
+    niv.extensao = {"ok": True, "desce_mm": 0.0,
+                    "motivo": u"desce 0 mm abaixo das claviculas"}
+    return niv, ivb_l, ivb_r, v_l
+
+
+def teste_o_ivb_sem_a_clavicula_antes_da_uniao():
+    secao(u"v8.7: antes da uniao, o Lvl_IVb sai sem a clavicula do mesmo lado; "
+          u"os outros niveis ficam como o modelo deu")
+    import radai_hnlnl as HN
+    base = tempfile.mkdtemp(prefix="radai_t_fulloar_")
+    try:
+        serie = _serie(base)
+        cruas = _cruas(com_plugins=False, extra=(
+            ("clavicula_right", (27, 29, 40, 45, 38, 58)),))
+
+        def _vez():
+            niv, ivb_l, ivb_r, v_l = _cervicais_com_clavicula()
+            sd, r, linhas, _d = _rodar(base, serie, cruas=cruas,
+                                       cervicais=niv)
+            return sd.meta_do_full["mascaras"], linhas, ivb_l, ivb_r, v_l
+        mf, linhas, ivb_l, ivb_r, v_l = _vez()
+        cl = np.asarray(mf["clavicula_left"], bool)
+        cr = np.asarray(mf["clavicula_right"], bool)
+        un = np.asarray(mf[HN.NOME_DA_UNIAO], bool)
+
+        def _sem(mf, un):
+            return {
+                u"o Lvl_IVb_L sem a clavicula esquerda":
+                    not (np.asarray(mf["Lvl_IVb_L"], bool) & cl).any(),
+                u"o Lvl_IVb_R sem a clavicula direita":
+                    not (np.asarray(mf["Lvl_IVb_R"], bool) & cr).any(),
+                u"a uniao sem a clavicula que o IVb tinha":
+                    not (un & ((ivb_l & cl) | (ivb_r & cr))).any(),
+            }
+        for rot, ok in sorted(_sem(mf, un).items()):
+            checar(rot, ok)
+        checar(u"  e o resto do IVb fica",
+               bool(np.asarray(mf["Lvl_IVb_L"], bool).any())
+               and not (ivb_l & ~cl & ~np.asarray(mf["Lvl_IVb_L"],
+                                                   bool)).any())
+        checar(u"so o IVb: o Lvl_V continua com a clavicula, e a uniao tambem "
+               u"(o recorte foi antes da uniao, so no IVb)",
+               bool((np.asarray(mf["Lvl_V_L"], bool) & cl).any())
+               and bool((un & v_l & cl).any()))
+        checar(u"o log diz quanto saiu de cada lado",
+               any(u"clavicula" in l and u"Lvl_IVb_L" in l for l in linhas)
+               and any(u"clavicula" in l and u"Lvl_IVb_R" in l
+                       for l in linhas),
+               [l for l in linhas if u"clavicula" in l][:4])
+        velho = HN.CLAVICULA_DO_IVB
+        HN.CLAVICULA_DO_IVB = {}
+        try:
+            mfi, _l, _a, _b, _c = _vez()
+        finally:
+            HN.CLAVICULA_DO_IVB = velho
+        isca = _sem(mfi, np.asarray(mfi[HN.NOME_DA_UNIAO], bool))
+        checar(u"ISCA: sem o recorte, o IVb e a uniao levam a clavicula (as "
+               u"checagens de cima reprovariam)", not any(isca.values()),
+               str(isca))
+        niv_m, _a, _b, _c = _cervicais_com_clavicula()
+        niv_m.extensao = {"ok": False, "desce_mm": 45.0,
+                          "motivo": u"a uniao desce 45 mm (bateria)"}
+        _sd, r_m, _l, _dd = _rodar(base, serie, cruas=cruas, cervicais=niv_m)
+        motivo = (r_m.get("oar_fora_por_regiao") or {}).get(
+            HN.NOME_DA_UNIAO, u"")
+        checar(u"a uniao que nao vai ao entregue leva o motivo ao resultado "
+               u"que o registro de casos le (o estudo marcado pela regua)",
+               u"regua" in motivo and "LNL_UNION_ai" not in r_m["estruturas"],
+               motivo)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+_CAIXA_DO_ENCEFALO = (12, 28, 18, 40, 44, 84)
+
+
+def teste_os_ventriculos_e_a_linha_media_dentro_do_brain():
+    secao(u"v8.7: os ventriculos e a linha media do modelo do encefalo ficam "
+          u"dentro do Brain_ai (recortados por ele, nas mascaras finais)")
+    checar(u"CONTIDAS_EM declara os dois dentro do encefalo",
+           E.CONTIDAS_EM.get("brain_ventricles") == "brain"
+           and E.CONTIDAS_EM.get("brain_midline") == "brain")
+    base = tempfile.mkdtemp(prefix="radai_t_fulloar_")
+    try:
+        serie = _serie(base)
+        ven = np.zeros((Z, Y, X), bool)
+        ven[20:24, 26:44, 60:70] = True
+        lin = np.zeros((Z, Y, X), bool)
+        lin[14:28, 16:42, 42:47] = True
+        extras = {"orgaos": {"brain_ventricles": ven, "brain_midline": lin},
+                  "alvos": {}, "observacoes": {},
+                  "origem": {"brain_ventricles": "cranio_ct",
+                             "brain_midline": "cranio_ct"}}
+        cruas = _cruas(com_plugins=False,
+                       extra=(("brain", _CAIXA_DO_ENCEFALO),))
+
+        def _vez():
+            sd, r, linhas, _d = _rodar(base, serie, cruas=cruas,
+                                       extras=extras)
+            mf = sd.meta_do_full["mascaras"]
+            b = np.asarray(mf["brain"], bool)
+            return {
+                u"os ventriculos dentro do Brain_ai final":
+                    not (np.asarray(mf["brain_ventricles"], bool) & ~b).any(),
+                u"a linha media dentro do Brain_ai final":
+                    not (np.asarray(mf["brain_midline"], bool) & ~b).any(),
+            }, linhas
+        ok, linhas = _vez()
+        for rot, v in sorted(ok.items()):
+            checar(rot, v)
+        checar(u"  e o log diz o recorte",
+               any(u"recortado para dentro de `brain`" in l for l in linhas))
+        velho = dict(E.CONTIDAS_EM)
+        for k in ("brain_ventricles", "brain_midline"):
+            E.CONTIDAS_EM.pop(k, None)
+        try:
+            isca, _l = _vez()
+        finally:
+            E.CONTIDAS_EM.clear()
+            E.CONTIDAS_EM.update(velho)
+        checar(u"ISCA: sem a contencao, os dois passam do encefalo (as "
+               u"checagens de cima reprovariam)", not any(isca.values()),
+               str(isca))
+        real = E.aplicar_contencao
+        chamadas = []
+
+        def _so_antes_da_suavizacao(masks, grade=None, log=None):
+            chamadas.append(1)
+            if len(chamadas) % 2 == 1:
+                return real(masks, grade, log=log)
+            return []
+        E.aplicar_contencao = _so_antes_da_suavizacao
+        try:
+            isca2, _l2 = _vez()
+        finally:
+            E.aplicar_contencao = real
+        checar(u"ISCA: so com a contencao antes da suavizacao, a linha media "
+               u"passa do encefalo suavizado (por isso ela roda de novo nas "
+               u"mascaras finais)", not all(isca2.values()), str(isca2))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def _rodar_na_modalidade(base, serie, cruas, modalidade):
+    import SimpleITK as sitk
+    vol = sitk.GetArrayFromImage(E.load_sitk(serie))
+    linhas = []
+    dest = os.path.join(base, "saida_%d" % len(os.listdir(base)))
+    os.makedirs(dest)
+    sd = RO.Saida(E, serie, dest, "RS_RadAI_20260924_1a2b3c4d.dcm",
+                  tasks=["total_v3"], versao="bateria", suavizar_mm=1.5,
+                  log=lambda m: linhas.append(str(m)), modalidade=modalidade)
+    sd.devolver_mascaras = True
+    return sd.full_e_oar(cruas, volume_hu=vol), linhas
+
+
+def teste_o_brain_da_rm_fica_so_no_full():
+    secao(u"v8.7: o Brain_ai da RM fica so no FULL; o da TC vai ao entregue")
+    base = tempfile.mkdtemp(prefix="radai_t_fulloar_")
+    try:
+        serie = _serie(base)
+        cruas = _cruas(com_plugins=False,
+                       extra=(("brain", _CAIXA_DO_ENCEFALO),))
+        r_tc, _l = _rodar_na_modalidade(base, serie, cruas, "CT")
+        checar(u"na TC o Brain_ai vai ao entregue",
+               "Brain_ai" in r_tc["estruturas"], str(r_tc["estruturas"]))
+        r_rm, l_rm = _rodar_na_modalidade(base, serie, cruas, "MR")
+        checar(u"na RM o Brain_ai fica no FULL e nao vai ao entregue",
+               "Brain_ai" in r_rm["estruturas_full"]
+               and "Brain_ai" not in r_rm["estruturas"],
+               str(r_rm["estruturas"]))
+        checar(u"  e o motivo vai ao resultado e ao log",
+               "brain" in (r_rm.get("oar_fora_por_regiao") or {})
+               and any(u"Brain_ai" in l and u"RM" in l for l in l_rm),
+               str(r_rm.get("oar_fora_por_regiao")))
+        velho = E.FORA_DO_OAR_NA_MODALIDADE
+        E.FORA_DO_OAR_NA_MODALIDADE = {}
+        try:
+            r_i, _li = _rodar_na_modalidade(base, serie, cruas, "MR")
+        finally:
+            E.FORA_DO_OAR_NA_MODALIDADE = velho
+        checar(u"ISCA: sem a regra, o Brain_ai da RM iria ao entregue",
+               "Brain_ai" in r_i["estruturas"])
+        import radai_batch as L
+
+        def _previa(mod):
+            lista, _t = L.estruturas_do_oar_possiveis("auto", [],
+                                                      modalidade=mod)
+            return set(e["chave"] for e in lista)
+        checar(u"a previa do entregue tambem: o encefalo na TC, e nao na RM",
+               "brain" in _previa("CT") and "brain" not in _previa("MR"))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def teste_os_pulmoes_somados_no_entregue():
+    secao(u"v8.7: Lungs_ai = Lung_L + Lung_R; na cabeca e pescoco sem torax o "
+          u"entregue leva o Lungs_ai no lugar dos dois")
+    import radai_geom
+    import radai_topography as TOPO
+    base = tempfile.mkdtemp(prefix="radai_t_fulloar_")
+    try:
+        serie = _serie(base)
+        sd, r, linhas, _d = _rodar(base, serie, cruas=_cruas(
+            com_plugins=False))
+        mf = sd.meta_do_full["mascaras"]
+        soma = (np.asarray(mf["lung_left"], bool)
+                | np.asarray(mf["lung_right"], bool))
+        checar(u"o Lungs_ai do FULL e exatamente a soma dos pulmoes finais",
+               "lungs" in mf and np.array_equal(np.asarray(mf["lungs"], bool),
+                                                soma))
+        checar(u"  e vai ao FULL e ao entregue",
+               "Lungs_ai" in r["estruturas_full"]
+               and "Lungs_ai" in r["estruturas"], str(r["estruturas"]))
+        checar(u"  sem alarme de sobreposicao com os pulmoes (ele os contem)",
+               not any(u"SOBREPOSICAO" in l and u"Lungs" in l
+                       for l in linhas))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+    g = radai_geom.Grade((3.0, 2.0, 2.0))
+    um = np.zeros((10, 20, 20), bool)
+    um[2:5, 2:8, 2:8] = True
+    masks = {"lung_left": um, "lung_right": um, "lungs": um}
+    velho = TOPO.anatomia_da_base
+
+    def _com(regioes):
+        TOPO.anatomia_da_base = lambda *a, **k: {
+            "regioes": tuple(regioes),
+            "laudo": [u"pescoco: sim (bateria)", u"torax: (bateria)"]}
+        try:
+            return E.fora_do_oar_por_regiao(dict(masks), g)
+        finally:
+            TOPO.anatomia_da_base = velho
+    so_cp = _com(("cabeca_pescoco",))
+    checar(u"cabeca e pescoco sem torax: Lung_L e Lung_R ficam so no FULL, o "
+           u"Lungs_ai vai", {"lung_left", "lung_right"} <= set(so_cp)
+           and "lungs" not in so_cp, str(sorted(so_cp)))
+    com_t = _com(("cabeca_pescoco", "torax"))
+    checar(u"  com o torax, os dois pulmoes e o Lungs_ai vao",
+           not ({"lung_left", "lung_right", "lungs"} & set(com_t)),
+           str(sorted(com_t)))
+    velho_l = E.FORA_DO_OAR_NO_PESCOCO_SEM_TORAX
+    E.FORA_DO_OAR_NO_PESCOCO_SEM_TORAX = tuple(
+        k for k in velho_l if not k.startswith("lung_"))
+    try:
+        isca = _com(("cabeca_pescoco",))
+    finally:
+        E.FORA_DO_OAR_NO_PESCOCO_SEM_TORAX = velho_l
+    checar(u"ISCA: sem a regra, os dois pulmoes iriam junto com o Lungs_ai",
+           "lung_left" not in isca)
+
+
+def _cruas_de_cabeca_e_pescoco():
+    cruas = _cruas(com_plugins=False)
+
+    def _mapa(itens):
+        lab = np.zeros((Z, Y, X), np.int16)
+        idx = {}
+        for i, (nome, m) in enumerate(itens, start=1):
+            lab[m] = i
+            idx[i] = nome
+        return E.MasksCruas(lab, idx)
+
+    def cx(z0, z1, y0, y1, x0, x1):
+        a = np.zeros((Z, Y, X), bool)
+        a[z0:z1, y0:y1, x0:x1] = True
+        return a
+    tire = cx(12, 20, 88, 98, 56, 72) & ~cx(12, 20, 90, 98, 58, 70)
+    crico = cx(8, 13, 90, 100, 58, 70) & ~cx(8, 13, 92, 98, 60, 68)
+    cruas["headneck_bones_vessels"] = _mapa((
+        ("hyoid", cx(20, 21, 86, 92, 58, 70)),
+        ("thyroid_cartilage", tire), ("cricoid_cartilage", crico),
+        ("larynx_air", cx(8, 20, 92, 96, 62, 66))))
+    cruas["head_glands_cavities"] = _mapa((
+        ("hypopharynx", cx(12, 21, 98, 104, 58, 70)),))
+    mand = np.zeros((Z, Y, X), bool)
+    for x0, x1 in ((81, 86), (42, 47)):
+        mand[10:13, 22:36, x0:x1] = True
+        mand[13:21, 30:40, x0:x1] = True
+        mand[21:25, 30:33, x0:x1] = True
+        mand[21:27, 36:40, x0:x1] = True
+    mand[10:13, 22:25, 42:86] = True
+    cruas["craniofacial_structures"] = _mapa((
+        ("mandible", mand), ("teeth_lower", cx(13, 15, 23, 26, 82, 85))))
+    return cruas
+
+
+def teste_as_estruturas_novas_chegam_ao_full_e_ao_oar():
+    secao(u"v8.7: Larynx_ai, TMJ_L_ai, TMJ_R_ai, Lungs_ai e a mandibula cheia "
+          u"no FULL e no entregue, com ate 16 caracteres e sem alarme")
+    novas = (u"Larynx_ai", u"TMJ_L_ai", u"TMJ_R_ai", u"Lungs_ai",
+             u"Bone_Mandible_ai")
+    base = tempfile.mkdtemp(prefix="radai_t_fulloar_")
+    try:
+        serie = _serie(base)
+        sd, r, linhas, _d = _rodar(base, serie,
+                                   cruas=_cruas_de_cabeca_e_pescoco())
+        for n in novas:
+            checar(u"%s no FULL e no entregue (%d caracteres)" % (n, len(n)),
+                   n in r["estruturas_full"] and n in r["estruturas"]
+                   and len(n) <= 16, str(sorted(r["estruturas"]))[:240])
+        mf = sd.meta_do_full["mascaras"]
+        lar = np.asarray(mf.get("larynx"), bool)
+        zs = np.flatnonzero(lar.any(axis=(1, 2))) if lar.ndim == 3 else []
+        checar(u"a laringe da cadeia vai do ultimo corte da cricoide (8) ao "
+               u"corte logo abaixo do hioide (19)",
+               len(zs) and int(zs.min()) == 8 and int(zs.max()) == 19,
+               str((int(zs.min()), int(zs.max())) if len(zs) else None))
+        atm = np.asarray(mf.get("tmj_left"), bool)
+        checar(u"a TMJ_L da cadeia nao leva o coronoide",
+               atm.ndim == 3 and atm.any()
+               and not atm[21:25, 30:33, 81:86].any())
+        checar(u"o log da serie diz por onde passou o plano medio da ATM "
+               u"(aqui, sem cranio, encefalo, C1 nem C2: a caixa da "
+               u"mandibula)", any(u"TMJ:" in l and u"caixa da mandibula" in l
+                                  for l in linhas),
+               [l for l in linhas if u"TMJ" in l][:3])
+        checar(u"a mandibula cheia leva os dentes inferiores",
+               bool(np.asarray(mf["mandible"], bool)[13:15, 23:26,
+                                                     82:85].all()))
+        checar(u"nenhum alarme de sobreposicao no entregue com as estruturas "
+               u"novas (o que elas contem esta declarado)",
+               not any(l.startswith(u"OAR: SOBREPOSICAO") and any(
+                   n[:-3] in l for n in novas) for l in linhas),
+               [l for l in linhas if u"SOBREPOSICAO" in l][:4])
+        velho = RS.PERMITIDOS_NO_OAR
+        RS.PERMITIDOS_NO_OAR = frozenset(
+            velho - {"larynx", "tmj_left", "tmj_right", "lungs"})
+        try:
+            _sd, ri, _l, _dd = _rodar(base, serie,
+                                      cruas=_cruas_de_cabeca_e_pescoco())
+        finally:
+            RS.PERMITIDOS_NO_OAR = velho
+        checar(u"ISCA: fora da lista de permitidos, elas ficariam so no FULL",
+               u"Larynx_ai" not in ri["estruturas"]
+               and u"Larynx_ai" in ri["estruturas_full"])
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
 
 
 
@@ -4527,7 +5139,7 @@ def teste_o_reto_e_os_compostos_da_pelve():
                any(l.startswith(u"FULL: ") and u"RS_RadAI_FULL_" in l
                    for l in linhas))
         checar(u"o registro: nome, rotulo e rotulo curto coerentes com o "
-               u"STUDY_full", RS.POR_COD["full"]["nome"] == u"FULL"
+               u"RadAI_FULL", RS.POR_COD["full"]["nome"] == u"FULL"
                and RS.POR_COD["full"]["rotulo_curto"] == u"FULL"
                and RS.POR_COD["full"]["rotulo"].startswith(u"FULL"),
                str((RS.POR_COD["full"]["nome"],
@@ -4646,7 +5258,7 @@ def _so_o_fast(dest):
 
 
 def teste_o_fast_grava_so_o_oar_fast():
-    secao(u"o FAST grava so o RadAI_OAR_Fast (spec 1.1, 1.4)")
+    secao(u"o FAST grava so o RadAI_STUDY_Fast (spec 1.1, 1.4)")
     base = tempfile.mkdtemp(prefix="radai_t_fulloar_")
     try:
         serie = _serie(base)
@@ -4664,12 +5276,16 @@ def teste_o_fast_grava_so_o_oar_fast():
                    (k, r.get(k)) for k in ("modo", "full", "oar"))))
         ds = pydicom.dcmread(r["oar_fast"])
         nomes = [str(x.ROIName) for x in ds.StructureSetROISequence]
-        checar(u"rotulo `RadAI_OAR_Fast`, UNAPPROVED, serie 900 (a do "
-               u"entregue)", ds.StructureSetLabel == "RadAI_OAR_Fast"
+        checar(u"rotulo `RadAI_STUDY_Fast`, UNAPPROVED, serie 900 (a do "
+               u"entregue)", ds.StructureSetLabel == "RadAI_STUDY_Fast"
                and ds.ApprovalStatus == "UNAPPROVED"
                and int(ds.SeriesNumber) == 900,
                "%s %s %s" % (ds.StructureSetLabel, ds.ApprovalStatus,
                              ds.SeriesNumber))
+        checar(u"  ISCA: o rotulo antigo `RadAI_OAR_Fast` reprovaria, e o "
+               u"leitor ainda o reconhece como o FAST",
+               "RadAI_OAR_Fast" != ds.StructureSetLabel
+               and RS.cod_do_rotulo("RadAI_OAR_Fast") == "fast")
         checar(u"  toda ROI com o sufixo `_ai`, e nenhum contorno externo",
                nomes and all(n.endswith("_ai") for n in nomes)
                and not any(n.lower().startswith(("body", "external"))
@@ -4688,7 +5304,7 @@ def teste_o_fast_grava_so_o_oar_fast():
                and "fast" in RS.POR_COD)
         sd2, r2, l2, dest2 = _rodar(base, serie)
         esperado = set(r2["estruturas"]) - {"Bag_Bowel_OAR_ai"}
-        checar(u"o conteudo e o do RadAI_OAR menos a Bag_Bowel_OAR",
+        checar(u"o conteudo e o do RadAI_STUDY menos a Bag_Bowel_OAR",
                set(r["estruturas"]) == esperado,
                u"so no FAST: %s | faltam: %s" % (
                    sorted(set(r["estruturas"]) - esperado),
@@ -5422,6 +6038,8 @@ def _oar_pelo_caminho_de_antes(rt_full, mapa_nomes, permitidos, meta, pasta):
     ds.StructureSetROISequence = pydicom.Sequence(
         [r for r in ds.StructureSetROISequence
          if int(r.ROINumber) in ficam_num])
+    for r in ds.StructureSetROISequence:
+        r.ROIDescription = RS.descricao_da_roi(str(r.ROIName))
     ds.ROIContourSequence = pydicom.Sequence(
         [r for r in ds.ROIContourSequence
          if int(getattr(r, "ReferencedROINumber", -1)) in ficam_num])
@@ -5442,6 +6060,67 @@ def _oar_pelo_caminho_de_antes(rt_full, mapa_nomes, permitidos, meta, pasta):
     return destino
 
 
+def teste_o_study_vazio_da_rm_grava_o_full_e_a_serie_fica_pronta():
+    secao(u"a RM so com o Brain_ai: o STUDY sai vazio, o FULL e gravado e a "
+          u"serie fica pronta")
+    import SimpleITK as sitk
+    import radai_batch as L
+    base = tempfile.mkdtemp(prefix="radai_t_fulloar_")
+    try:
+        serie = _serie(base)
+        vol = sitk.GetArrayFromImage(E.load_sitk(serie))
+        lab = np.zeros((Z, Y, X), np.int16)
+        lab[8:22, 40:90, 40:90] = 1
+        cruas = {"total_mr": E.MasksCruas(lab, {1: "brain"})}
+
+        def _rodar_mod(mod):
+            linhas = []
+            dest = os.path.join(base, "saida_%s" % mod)
+            os.makedirs(dest)
+            sd = RO.Saida(E, serie, dest, "RS_RadAI_20260924_1a2b3c4d.dcm",
+                          tasks=["total_mr"], versao="bateria",
+                          suavizar_mm=1.5, log=lambda m: linhas.append(str(m)),
+                          modalidade=mod)
+            erro = None
+            r = {}
+            try:
+                r = sd.full_e_oar(dict(cruas), volume_hu=vol) or {}
+            except Exception as e:
+                erro = e
+            return sd, r, linhas, dest, erro
+        sd, r, linhas, dest, erro = _rodar_mod("MR")
+        checar(u"a serie NAO falha (a entrega nao levanta)", erro is None,
+               repr(erro)[:300])
+        arqs = sorted(a for a in os.listdir(dest) if a.endswith(".dcm"))
+        checar(u"  o FULL e gravado, com o Brain_ai, e nenhum STUDY",
+               arqs and all(a.startswith("RS_RadAI_FULL_") for a in arqs)
+               and "Brain_ai" in (r.get("estruturas_full") or []),
+               u"%s | %s" % (arqs, r.get("estruturas_full")))
+        checar(u"  `gravados` diz so `full`, e o resultado diz o STUDY vazio",
+               sd.gravados == ["full"] and r.get("oar") is None
+               and r.get("study_vazio") and r.get("estruturas") == []
+               and r.get("entregue") == r.get("full"),
+               str((sd.gravados, r.get("study_vazio"), r.get("entregue"))))
+        checar(u"  e uma linha no log diz que o STUDY saiu vazio",
+               any(l.startswith(u"STUDY: saiu vazio") for l in linhas),
+               u" | ".join(l for l in linhas if u"STUDY" in l)[:300])
+        try:
+            conferidos = L.exigir_rtstruct_no_disco(sd)
+        except Exception as e:
+            conferidos = repr(e)
+        checar(u"o portao do marcador de pronta (RTSTRUCT no disco) passa com "
+               u"o FULL: a serie e marcada pronta", conferidos == ["full"],
+               str(conferidos)[:200])
+        sd2, r2, l2, dest2, erro2 = _rodar_mod("CT")
+        checar(u"(isca) a mesma mascara na TC leva o Brain_ai ao STUDY: o vazio "
+               u"vem da regra da RM, e o fantoma exercita o ramo",
+               erro2 is None and "Brain_ai" in (r2.get("estruturas") or [])
+               and "oar" in sd2.gravados and not r2.get("study_vazio"),
+               str((repr(erro2)[:120], r2.get("estruturas"))))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def teste_o_oar_sai_igual_ao_caminho_de_antes():
     secao(u"v8.5: o OAR gravado das mascaras, antes do FULL, sai igual ao de "
           u"antes (a selecao relida do arquivo do FULL)")
@@ -5451,7 +6130,7 @@ def teste_o_oar_sai_igual_ao_caminho_de_antes():
     pedido = {}
 
     def _espia(stage, masks, **kw):
-        if kw.get("rotulo") == "STUDY_full" and "kw" not in pedido:
+        if kw.get("rotulo") == "RadAI_FULL" and "kw" not in pedido:
             pedido["stage"] = stage
             pedido["masks"] = dict((k, np.array(masks[k], copy=True))
                                    for k in masks)
@@ -5939,6 +6618,7 @@ def main():
               teste_a_descricao_da_serie_chega_ao_dicom,
               teste_a_copia_temporaria_do_oar_e_apagada,
               teste_a_copia_temporaria_do_oar_fast_e_apagada,
+              teste_a_copia_temporaria_do_full_e_dos_conjuntos_e_apagada,
               teste_os_niveis_cervicais_entram_crus_e_marcados,
               teste_o_oar_do_pescoco_com_niveis,
               teste_a_parotida_por_lado,
@@ -5973,7 +6653,13 @@ def main():
               teste_as_regras_de_gravacao_rodam_primeiro_e_nao_vao_ao_dicom,
               teste_o_heart_ai_com_pericardio_e_um_volume_depois_do_recorte,
               teste_o_heart_ai_sem_a_cava_inferior_por_baixo,
-              teste_o_heart_ai_sem_a_cava_fundida_nem_o_corte_so_de_cava,
+              teste_o_heart_ai_os_tres_casos_da_cava_e_sem_o_esofago,
+              teste_a_tireoide_e_delgada,
+              teste_o_ivb_sem_a_clavicula_antes_da_uniao,
+              teste_os_ventriculos_e_a_linha_media_dentro_do_brain,
+              teste_o_brain_da_rm_fica_so_no_full,
+              teste_os_pulmoes_somados_no_entregue,
+              teste_as_estruturas_novas_chegam_ao_full_e_ao_oar,
               teste_o_full_leva_tudo,
               teste_o_apendice_atrial_e_roi_do_full,
               teste_o_reto_e_os_compostos_da_pelve,
@@ -5986,6 +6672,7 @@ def main():
               teste_o_ts_cru_nao_sai_do_entregue,
               teste_o_derrame_e_anatomia_do_torax,
               teste_o_oar_e_gravado_antes_e_o_full_pode_faltar,
+              teste_o_study_vazio_da_rm_grava_o_full_e_a_serie_fica_pronta,
               teste_o_oar_sai_igual_ao_caminho_de_antes,
               teste_a_gravacao_nao_guarda_duas_copias,
               teste_as_carotidas_ficam_so_no_full,

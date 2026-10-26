@@ -386,7 +386,7 @@ def _reparo_vem_antes_da_formatacao(fonte):
                                                            None)
             if nome == "_reparar_contornos_degenerados":
                 reparo.append(no.lineno)
-            elif nome == "_suavizar_contornos":
+            elif nome in ("_suavizar_contornos", "_gravar_pontos"):
                 depois.append(no.lineno)
         elif isinstance(no, ast.Assign):
             for alvo in no.targets:
@@ -517,7 +517,7 @@ def teste_nenhum_campo_estoura_o_limite_do_VR():
         masks = {"heart": ((zz - 4) ** 2 + (yy - 32) ** 2 + (xx - 32) ** 2) <= 100}
 
         import radai_sets as CJ
-        rotulos = [None] + ["STUDY_" + c["cod"] for c in CJ.CONJUNTOS
+        rotulos = [None] + [CJ.rotulo_dicom(c["cod"]) for c in CJ.CONJUNTOS
                             if c["cod"] != "oar"]
         try:
             import radai_hnlnl as _hn
@@ -911,7 +911,7 @@ def teste_o_conjunto_cru_nao_recebe_nada_nosso():
     checar(u"e `radai_output` o repassa ao motor",
            "cru=bool(reg.get(" in fonte_out)
 
-    base = tempfile.mkdtemp()
+    base = tempfile.mkdtemp(prefix="radai_teste_")
     serie = os.path.join(base, "s")
     escreve_serie(serie, "PAC_CRU", datetime.now(), 12)
     forma = (12, 64, 64)
@@ -924,15 +924,17 @@ def teste_o_conjunto_cru_nao_recebe_nada_nosso():
 
     def roda(cru):
         linhas = []
-        M.build_rtstruct(serie, {"kidney_left": rim.copy(),
-                                 "kidney_cyst_left": cisto.copy()},
-                         tasks=["total"], versao_worker="teste",
-                         log=lambda t: linhas.append(str(t)), cru=cru,
-                         descontar=True)
+        rs, _mapa = M.build_rtstruct(serie, {"kidney_left": rim.copy(),
+                                             "kidney_cyst_left": cisto.copy()},
+                                     tasks=["total"], versao_worker="teste",
+                                     log=lambda t: linhas.append(str(t)),
+                                     cru=cru, descontar=True)
+        shutil.rmtree(os.path.dirname(str(rs)), ignore_errors=True)
         return u" | ".join(linhas)
 
     log_nosso = roda(False)
     log_cru = roda(True)
+    shutil.rmtree(base, ignore_errors=True)
     checar(u"no conjunto NOSSO o rim e descontado do cisto",
            "descontado" in log_nosso, log_nosso[-160:] or u"(log vazio)")
     checar(u"e no CRU nao ha desconto nenhum, mesmo pedindo",
@@ -949,7 +951,7 @@ def teste_o_conjunto_cru_nao_recebe_nada_nosso():
 
     print(u"\n-- so entra estrutura COM contorno --")
     import pydicom
-    base = tempfile.mkdtemp()
+    base = tempfile.mkdtemp(prefix="radai_teste_")
     serie = os.path.join(base, "s")
     escreve_serie(serie, "PAC_V", datetime.now(), 12)
     forma = (12, 64, 64)
@@ -976,6 +978,8 @@ def teste_o_conjunto_cru_nao_recebe_nada_nosso():
     for c in getattr(ds, "ROIContourSequence", []):
         if getattr(c, "ContourSequence", None):
             com_contorno.add(por_num.get(c.ReferencedROINumber))
+    shutil.rmtree(base, ignore_errors=True)
+    shutil.rmtree(os.path.dirname(str(rs)), ignore_errors=True)
 
     checar(u"a estrutura cheia entrou", "Heart_ai" in nomes, str(sorted(nomes)))
     checar(u"a VAZIA nao entrou",
@@ -1044,7 +1048,7 @@ def teste_o_desconto_do_cisto_e_do_OAR_e_nao_do_orgao():
     checar(u"e o `full` tambem (Q6: rim descontado + cisto no FULL)",
            bool(full.get("desconta")), repr(full.get("desconta")))
     fast = radai_sets.POR_COD.get("fast") or {}
-    checar(u"e o `fast` (o RadAI_OAR_Fast) tambem, como o OAR de que ele sai",
+    checar(u"e o `fast` (o RadAI_STUDY_Fast) tambem, como o STUDY de que ele sai",
            bool(fast.get("desconta")) and bool(fast.get("entregue")),
            repr(fast))
     for cod, reg in radai_sets.POR_COD.items():
@@ -1053,7 +1057,7 @@ def teste_o_desconto_do_cisto_e_do_OAR_e_nao_do_orgao():
         checar(u"   nenhum outro desconta: %s" % cod,
                not reg.get("desconta"), repr(reg.get("desconta")))
 
-    base = tempfile.mkdtemp()
+    base = tempfile.mkdtemp(prefix="radai_teste_")
     serie = os.path.join(base, "s")
     escreve_serie(serie, "PAC_CISTO", datetime.now(), 12)
     forma = (12, 64, 64)
@@ -1066,15 +1070,17 @@ def teste_o_desconto_do_cisto_e_do_OAR_e_nao_do_orgao():
 
     def roda(descontar):
         linhas = []
-        M.build_rtstruct(serie, {"kidney_left": rim.copy(),
-                                 "kidney_cyst_left": cisto.copy()},
-                         tasks=["total"], versao_worker="teste",
-                         log=lambda t: linhas.append(str(t)),
-                         cru=False, descontar=descontar)
+        rs, _mapa = M.build_rtstruct(serie, {"kidney_left": rim.copy(),
+                                             "kidney_cyst_left": cisto.copy()},
+                                     tasks=["total"], versao_worker="teste",
+                                     log=lambda t: linhas.append(str(t)),
+                                     cru=False, descontar=descontar)
+        shutil.rmtree(os.path.dirname(str(rs)), ignore_errors=True)
         return u" | ".join(linhas)
 
     log_oar = roda(True)
     log_full = roda(False)
+    shutil.rmtree(base, ignore_errors=True)
     checar(u"com `descontar` o rim perde o cisto",
            "descontado" in log_oar, log_oar[-160:] or u"(log vazio)")
     checar(u"SEM `descontar` o orgao sai inteiro",
@@ -3601,16 +3607,17 @@ def teste_o_rotulo_de_conjunto_cabe_nos_16_e_nao_colide():
         cod = str(c["cod"])
         if cod == "oar":
             continue
-        r = ("STUDY_" + cod)[:16]
-        checar(u"`STUDY_%s` cabe nos 16" % cod,
-               len("STUDY_" + cod) <= 16,
-               "%d caracteres" % len("STUDY_" + cod))
+        r = radai_sets.rotulo_dicom(cod)
+        checar(u"`%s` cabe nos 16" % r, len(r) <= 16,
+               "%d caracteres" % len(r))
         checar(u"e nao colide com `%s`" % vistos.get(r, "-"),
                r not in vistos, "%s ja e de %s" % (r, vistos.get(r)))
         vistos[r] = cod
-    checar(u"o entregue leva RadAI_OAR e ele cabe", len("RadAI_OAR") <= 16)
-    checar(u"e o entregue NAO leva rotulo de estudo",
-           "RadAI_OAR" not in vistos)
+    _ent = radai_sets.rotulo_dicom("oar")
+    checar(u"o entregue leva RadAI_STUDY e ele cabe",
+           _ent == "RadAI_STUDY" and len(_ent) <= 16)
+    checar(u"e nenhum outro conjunto leva o rotulo do entregue",
+           _ent not in vistos)
 
 
 def teste_a_lamina_do_pericardio_sobrevive_ao_coracao():

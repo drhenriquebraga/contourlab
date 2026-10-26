@@ -33,6 +33,14 @@ MODELOS = {
                        "cads-model-open_v1.0.0/Dataset556_GC256.zip"),
         "arquivos": [("Dataset556_GC256.zip", 761_532_976)],
         "extrair": "Dataset556_GC256.zip",
+        "enxuto": {
+            "Dataset556_GC256/"
+            "nnUNetTrainerNoMirroring__nnUNetResEncUNetLPlans__3d_fullres/"
+            "fold_all/checkpoint_final.pth":
+                (410_851_042,
+                 "2dc941fa17f23c4fcec94efa8483db2695fc3f65045ea6a45bd4304e"
+                 "e1ce52c4"),
+        },
         "licenca": (u"código Apache 2.0 · PESOS da variante `open` sob "
                     u"CC BY-SA 4.0 — permite uso comercial, com ShareAlike"),
         "uso_permitido": "livre",
@@ -146,6 +154,32 @@ MODELOS = {
             "clin_ct_body_composition_05092024.zip":
                 "a671fdf840ba986bd23a4a1a4caf67a3cf1b2641a8b79327f29fae66"
                 "a22adcc4",
+        },
+        "enxuto": {
+            "Dataset778_Body_composition/"
+            "nnUNetTrainer_2000epochs__nnUNetPlans__3d_fullres/fold_all/"
+            "checkpoint_best.pth":
+                (179_858_226,
+                 "336dd26b3e3484a26a7d59f733943ae209d17e499542fa7ea3122fc1"
+                 "fb592dd9"),
+            "Dataset778_Body_composition/"
+            "nnUNetTrainer_2000epochs__nnUNetPlans__3d_fullres/fold_all/"
+            "checkpoint_final.pth":
+                (179_858_674,
+                 "c01892afc3c3df7618d9d138e9c180889b9c6a45f960fd0aa53cfedb"
+                 "6262ebb8"),
+            "Dataset888_Cardiac/"
+            "nnUNetTrainer_2000epochs_NoMirroring__nnUNetPlans__3d_fullres/"
+            "fold_all/checkpoint_best.pth":
+                (124_526_426,
+                 "66e16a6a64da905998be0db1e94bb3950d974b2c63e51e41d58157d5"
+                 "923138f7"),
+            "Dataset888_Cardiac/"
+            "nnUNetTrainer_2000epochs_NoMirroring__nnUNetPlans__3d_fullres/"
+            "fold_all/checkpoint_final.pth":
+                (124_526_426,
+                 "66e16a6a64da905998be0db1e94bb3950d974b2c63e51e41d58157d5"
+                 "923138f7"),
         },
         "url_por_arquivo": {
             "clin_ct_cardiac_ras_21052025.zip":
@@ -308,6 +342,68 @@ MODELOS = {
             "--2d__nnUNetTrainerV2__nnUNetPlansv2.1/postprocessing.json":
                 "bc1e477533d881e48fbc94325c2691663f36366564beb854e17a2e364c657c04",
         },
+        "enxuto": {
+            "2d/Task110_HNLNFixed_MirrorBest/"
+            "nnUNetTrainerV2__nnUNetPlansv2.1/fold_0/"
+            "model_final_checkpoint.model":
+                (120_206_666,
+                 "c6ff083939e229d0bd906d7df5cd1036301e4dec440d8c866fe9f41c"
+                 "b8e365b7"),
+            "2d/Task110_HNLNFixed_MirrorBest/"
+            "nnUNetTrainerV2__nnUNetPlansv2.1/fold_1/"
+            "model_final_checkpoint.model":
+                (120_207_370,
+                 "bc2d749fa5cf560f41c5bc1061d42501b14e64f8aec8c2303b8d9141"
+                 "a2910dfa"),
+            "2d/Task110_HNLNFixed_MirrorBest/"
+            "nnUNetTrainerV2__nnUNetPlansv2.1/fold_2/"
+            "model_final_checkpoint.model":
+                (120_207_050,
+                 "a4ed5f6150b73beb089ef2279c7d4635463f4c994c3161b0ec50b86c"
+                 "0e8da29e"),
+            "2d/Task110_HNLNFixed_MirrorBest/"
+            "nnUNetTrainerV2__nnUNetPlansv2.1/fold_3/"
+            "model_final_checkpoint.model":
+                (120_207_306,
+                 "9947f31ecc72abac2be6c1ca4803c665b3ce26879a984ff1a448c248"
+                 "8b6068d2"),
+            "2d/Task110_HNLNFixed_MirrorBest/"
+            "nnUNetTrainerV2__nnUNetPlansv2.1/fold_4/"
+            "model_final_checkpoint.model":
+                (120_206_922,
+                 "68599ed4e75764d9901247ef875fa06020cf88989318d23c55706fa9"
+                 "742447d9"),
+            "3d_fullres/Task110_HNLNFixed_MirrorBest/"
+            "nnUNetTrainerV2__nnUNetPlansv2.1/fold_0/"
+            "model_final_checkpoint.model":
+                (123_319_408,
+                 "0d0251db81d3dedb54ca90d5756de272c05027e65ada463bf9146252"
+                 "77b7d1b5"),
+            "3d_fullres/Task110_HNLNFixed_MirrorBest/"
+            "nnUNetTrainerV2__nnUNetPlansv2.1/fold_1/"
+            "model_final_checkpoint.model":
+                (123_319_024,
+                 "124553097de2c08d474ca00eced4b87ffda7585abe56d460f4d9993a"
+                 "a0b93a56"),
+            "3d_fullres/Task110_HNLNFixed_MirrorBest/"
+            "nnUNetTrainerV2__nnUNetPlansv2.1/fold_2/"
+            "model_final_checkpoint.model":
+                (123_319_600,
+                 "15a494c0e4f2819b7f051ff939249b83bd1fa90dacdd699051c4b8b6"
+                 "275a04d7"),
+            "3d_fullres/Task110_HNLNFixed_MirrorBest/"
+            "nnUNetTrainerV2__nnUNetPlansv2.1/fold_3/"
+            "model_final_checkpoint.model":
+                (123_319_856,
+                 "830a84b3f358e6ef761170d4c8a6593ad9bfc3d17120eddb0c0e91d4"
+                 "8dedf2f2"),
+            "3d_fullres/Task110_HNLNFixed_MirrorBest/"
+            "nnUNetTrainerV2__nnUNetPlansv2.1/fold_4/"
+            "model_final_checkpoint.model":
+                (123_319_984,
+                 "efd0f17b1275ffe14a8add475653981bf918d14e8e8c34616b97140b"
+                 "3e5589c2"),
+        },
         "arquivos": [],
         "licenca": u"CC0-1.0 (domínio público) — código E pesos",
         "uso_permitido": "livre",
@@ -416,6 +512,13 @@ MODELOS = {
                 "d098f10fd81292f2722cba5bed556ca411b4c6f778d3f12d00571bdf"
                 "5eba0862",
         },
+        "enxuto": {
+            "nnUNetTrainer__nnUNetPlans__3d_fullres/fold_all/"
+            "checkpoint_final.pth":
+                (123_734_042,
+                 "6488d519ab6c6dfaf2fb8afa172cad949173a65e0e2c55b05f99ae49"
+                 "c67b823e"),
+        },
         "licenca": u"PESOS sob MIT — permite uso comercial",
         "uso_permitido": "livre",
         "gpu_min_gb": 6,
@@ -477,6 +580,23 @@ def pasta_do_modelo(ident, criar=False):
 
 
 
+def _tamanhos_aceitos(m, rel, tam):
+    enxuto = (m.get("enxuto") or {}).get(rel)
+    return (int(tam or 0),) + ((int(enxuto[0]),) if enxuto else ())
+
+
+def _somas_aceitas(m, rel, sha):
+    enxuto = (m.get("enxuto") or {}).get(rel)
+    return (sha,) + ((enxuto[1],) if enxuto else ())
+
+
+def _e_o_enxuto(m, rel, alvo):
+    enxuto = (m.get("enxuto") or {}).get(rel)
+    return (bool(enxuto) and alvo.is_file()
+            and alvo.stat().st_size == int(enxuto[0])
+            and _sha256(alvo) == enxuto[1])
+
+
 def estado_do_modelo(ident):
     m = dict(MODELOS.get(ident) or {})
     if not m:
@@ -487,8 +607,9 @@ def estado_do_modelo(ident):
         alvo = d / rel
         esperado = int(tam or 0)
         bytes_total += esperado
-        if alvo.exists() and (not esperado or alvo.stat().st_size == esperado):
-            bytes_ok += alvo.stat().st_size if esperado else 0
+        if alvo.exists() and (not esperado or alvo.stat().st_size
+                              in _tamanhos_aceitos(m, rel, esperado)):
+            bytes_ok += esperado
         else:
             faltando.append(rel)
 
@@ -540,7 +661,8 @@ def _falta_do_conteudo(m, d):
     fora = []
     for rel, tam in m.get("conteudo") or []:
         alvo = d / rel
-        if not (alvo.is_file() and alvo.stat().st_size == int(tam or 0)):
+        if not (alvo.is_file() and alvo.stat().st_size
+                in _tamanhos_aceitos(m, rel, tam)):
             fora.append(rel)
     return fora
 
@@ -553,7 +675,7 @@ def _conferir_conteudo(m, d):
                          % (len(falta), ", ".join(falta[:3])))
     for rel, _tam in m.get("conteudo") or []:
         sha = (m.get("sha256") or {}).get(rel)
-        if sha and _sha256(d / rel) != sha:
+        if sha and _sha256(d / rel) not in _somas_aceitas(m, rel, sha):
             raise IOError("sha256 nao bate: %s" % rel)
 
 
@@ -601,11 +723,15 @@ def baixar(ident, progresso=None):
 
     destino = pasta_do_modelo(ident, criar=True)
     baixados, pulados, copiados = [], [], []
+    ja_extraidos = _zips_ja_extraidos(m, destino)
     for rel, tam in m["arquivos"]:
         alvo = destino / rel
         esperado = int(tam or 0)
         sha = (m.get("sha256") or {}).get(rel)
         md5 = (m.get("md5") or {}).get(rel)
+        if rel in ja_extraidos or _e_o_enxuto(m, rel, alvo):
+            pulados.append(rel)
+            continue
         if alvo.exists() and (not esperado or alvo.stat().st_size == esperado):
             if (not sha or _sha256(alvo) == sha) \
                     and (not md5 or _md5(alvo) == md5):
@@ -702,6 +828,20 @@ def zips_a_extrair(m):
     return (rel,)
 
 
+def _marca_do_zip(destino, rel):
+    limpo = "".join(c if (c.isalnum() or c in "._-") else "_" for c in rel)
+    return destino / ("pesos_extraidos.%s.txt" % limpo)
+
+
+def _zips_ja_extraidos(m, destino):
+    rels = zips_a_extrair(m)
+    if not rels or _falta_do_conteudo(m, destino):
+        return set()
+    if (destino / "pesos_extraidos.txt").is_file():
+        return set(rels)
+    return set(r for r in rels if _marca_do_zip(destino, r).is_file())
+
+
 def _extrair_se_preciso(ident, m, destino):
     rels = zips_a_extrair(m)
     if not rels:
@@ -711,13 +851,9 @@ def _extrair_se_preciso(ident, m, destino):
         return []
     import zipfile
 
-    def _marca_de(rel):
-        limpo = "".join(c if (c.isalnum() or c in "._-") else "_" for c in rel)
-        return destino / ("pesos_extraidos.%s.txt" % limpo)
-
     nomes, feitos = [], []
     for rel in rels:
-        parcial = _marca_de(rel)
+        parcial = _marca_do_zip(destino, rel)
         if parcial.is_file():
             feitos.append((rel, -1))
             continue

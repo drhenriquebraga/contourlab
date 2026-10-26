@@ -59,6 +59,10 @@ button[disabled]{opacity:.45;cursor:not-allowed}
 .vr-serie{margin:6px 0 16px}
 .vr-ps{position:relative}
 .vr-ps-ajuda{position:absolute;right:4px;top:8px;z-index:2}
+.vr-campo-l{display:flex;gap:6px;align-items:stretch}
+.vr-campo-l input{flex:1 1 auto;min-width:0}
+.vr-filtro{margin:10px 0 0}
+#vr_est{margin:8px 0 0}
 """
 
 PAGINA = u"""<!doctype html><html><head><meta charset="utf-8">
@@ -97,23 +101,25 @@ PASTA_HTML = u"""
  <div class="vr-busca">
   <div class="vr-campo">
    <label for="vr_pasta">Pasta do exame, ou o <b>.zip</b> dele</label>
-   <input type="text" id="vr_pasta" spellcheck="false"
-    placeholder="cole o caminho da pasta, ou use o Procurar ao lado">
+   <div class="vr-campo-l"><input type="text" id="vr_pasta" spellcheck="false"
+    placeholder="cole o caminho da pasta, ou use o Procurar ao lado">@FAV@</div>
   </div>
   <div class="vr-bts">
    <button type="button" class="ui-bt" id="vr_procurar" onclick="vrProcurar(this)">Procurar&hellip;</button>
    <button type="button" class="ui-bt pri" onclick="vrVarrer()">Buscar contornadas</button>
   </div>
  </div>
+ <div class="vr-filtro">@FILTRO@</div>
  <div id="vr_msg" class="sub" role="status" style="margin-top:8px"></div>
+ <div id="vr_est" class="ui-vl-est" role="status" aria-live="polite"></div>
  <h3 class="vr-sub oculto" id="vr_sub_encontradas">Séries encontradas
-  <span class="ui-ajuda dir" tabindex="0" aria-label="ajuda">?<span class="ui-balao"><p>Aparecem só as séries que já têm contorno ao lado — um RTSTRUCT ou o mapa de rótulos dos estudos 3D. Série sem contorno é o assunto do <b>Rodar agora</b>.</p><p>Cada série grava um arquivo por conjunto que rodou — o OAR, o FULL, o TS cru e um por modelo ou plugin —, e as marcas ao lado dizem quais existem. O <b>Radioterapia.ai_OAR</b> (ou o <b>OAR_Fast</b>, do modo FAST) é a seleção voltada para radioterapia; os outros são estudo.</p></span></span></h3>
+  <span class="ui-ajuda dir" tabindex="0" aria-label="ajuda">?<span class="ui-balao"><p>Aparecem só as séries que já têm contorno ao lado — um RTSTRUCT ou o mapa de rótulos dos estudos 3D. Série sem contorno é o assunto do <b>Rodar agora</b>.</p><p>Cada série grava um arquivo por conjunto que rodou — o STUDY, o FULL, o TS cru e um por modelo ou plugin —, e as marcas ao lado dizem quais existem. O <b>STUDY</b> (ou o <b>STUDY_Fast</b>, do modo FAST) é a seleção voltada para radioterapia; os outros são para revisão e comparação.</p></span></span></h3>
  <div id="vr_vazio" class="vr-vazio oculto"></div>
  <div id="vr_lista" class="vr-lista oculto"><table id="vr_tab"></table></div>
 """
 
 JS = u"""
-var VR = {series: [], escolhida: -1, uidPedido: '', handoff: false};
+var VR = {series: [], escolhida: -1, uidPedido: '', handoff: false, pedido: 0};
 function vrPopup(){ return window.uiPopupSerie ? uiPopupSerie('vr_escolha') : null }
 
 function esc(s){
@@ -223,49 +229,52 @@ function vrAbrirDoAcervo(linha, i){
 }
 document.addEventListener('DOMContentLoaded', vrAcervo);
 
-function vrVarrer(){
+function vrVarrer(o){
+ o = o || {};
  var p = (vrEl('vr_pasta').value || '').trim();
- if(!p){ vrMsg('diga onde procurar', false); return; }
- vrMsg('procurando séries contornadas…');
+ if(!p){ vrMsg('diga onde procurar', false); if(window.uiTremer) uiTremer(vrEl('vr_pasta')); return; }
+ if(!window.uiVarrerLista){ vrMsg('não consegui procurar nesta pasta', false); return; }
+ vrMsg('');
+ var pedido = ++VR.pedido;
+ VR.series = []; VR.escolhida = -1;
  vrEl('vr_lista').className = 'vr-lista oculto';
  vrEl('vr_vazio').className = 'vr-vazio oculto';
  vrEl('vr_sub_encontradas').className = 'vr-sub oculto';
- fetch('/api/verseg/series', {method:'POST',
-   headers:{'Content-Type':'application/json'},
-   body: JSON.stringify({pasta: p})})
-  .then(function(r){ return r.json() })
-  .then(function(d){
-   VR.series = d.series || [];
-   if(d.erro && !VR.series.length){
-    if(VR.handoff){ VR.handoff = false; VR.uidPedido = ''; vrEscolherDeNovo(); }
-    vrEl('vr_vazio').innerHTML = '<b>Nenhuma série contornada aqui</b>'
-      + esc(d.erro) + '<div style="margin-top:12px">'
-      + '<a class="btn pri" href="/lote">Ir para o Rodar agora</a></div>';
-    vrEl('vr_vazio').className = 'vr-vazio';
-    vrEl('vr_sub_encontradas').className = 'vr-sub';
-    vrMsg('');
-    return;
-   }
-   vrMsg('%s série(s) com contorno'.replace('%s', VR.series.length));
+ window.uiVarrerLista({estado: 'vr_est', uso: @USO_JS@, chave: 'verseg', pasta: p,
+  dias: (o.dias == null) ? 'vr_dias' : o.dias,
+  pintar: function(linhas){
+   if(pedido !== VR.pedido || !linhas.length) return;
+   VR.series = linhas;
    vrEl('vr_sub_encontradas').className = 'vr-sub';
    vrPintar();
-   if(VR.uidPedido){
-    var k = -1;
-    VR.series.forEach(function(x, j){ if(k < 0 && x.uid === VR.uidPedido) k = j; });
-    VR.uidPedido = '';
-    if(k >= 0){ VR.escolhida = k; vrPintar(); vrAbrirSerie(VR.series, k); }
-    else vrEscolherDeNovo();
-   } else if(VR.handoff) vrEscolherDeNovo();
-   VR.handoff = false;
-  })
-  .catch(function(e){
-   if(VR.handoff){ VR.handoff = false; vrEscolherDeNovo(); }
-   var m = vrEl('vr_msg'); if(!m) return;
-   var h = '<span data-radai-frase>não consegui procurar nesta pasta</span> <code></code>';
-   if(window.uiHTML) window.uiHTML(m, h); else m.innerHTML = h;
-   m.querySelector('code').textContent = String((e && e.message) || e || '');
-   m.style.color = 'var(--perigo,#E96A5C)';
-  });
+  },
+  aoFim: function(linhas){ if(pedido === VR.pedido) vrFimDaBusca(linhas || [], p) },
+  aoErro: function(){ if(pedido === VR.pedido) vrFimDaBusca([], p) }});
+}
+function vrFimDaBusca(linhas, p){
+ VR.series = linhas;
+ if(!VR.series.length){
+  if(VR.handoff){ VR.handoff = false; VR.uidPedido = ''; vrEscolherDeNovo(); }
+  vrEl('vr_lista').className = 'vr-lista oculto';
+  vrEl('vr_vazio').innerHTML = '<b data-radai-frase>Nenhuma série contornada aqui</b>'
+    + '<span data-radai-frase>' + esc(uiMolde(@NENHUMA_JS@, [p])) + '</span>'
+    + '<div style="margin-top:12px">'
+    + '<a class="btn pri" href="/lote">Ir para o Rodar agora</a></div>';
+  vrEl('vr_vazio').className = 'vr-vazio';
+  vrEl('vr_sub_encontradas').className = 'vr-sub';
+  try{ if(window.radaiRetraduzir) window.radaiRetraduzir() }catch(e){}
+  return;
+ }
+ vrEl('vr_sub_encontradas').className = 'vr-sub';
+ vrPintar();
+ if(VR.uidPedido){
+  var k = -1;
+  VR.series.forEach(function(x, j){ if(k < 0 && x.uid === VR.uidPedido) k = j; });
+  VR.uidPedido = '';
+  if(k >= 0){ VR.escolhida = k; vrPintar(); vrAbrirSerie(VR.series, k); }
+  else vrEscolherDeNovo();
+ } else if(VR.handoff) vrEscolherDeNovo();
+ VR.handoff = false;
 }
 
 var VR_CONJ = @CONJUNTOS@;
@@ -360,7 +369,7 @@ function vrAbrirSerie(lista, i){
   alvo.value = p;
   VR.uidPedido = u;
   VR.handoff = true;
-  if(typeof vrVarrer === 'function'){ vrVarrer(); }
+  if(typeof vrVarrer === 'function'){ vrVarrer({dias: 0}); }
  }catch(e){}
 })();
 """
@@ -428,7 +437,10 @@ def _pagina():
                   .replace("@VISORCSS@", css_visor)
                   .replace("@VISORJS@", js_visor)
                   .replace("@VERSEGJS@", js_verseg)
-                  .replace("@VERJS@", JS.replace("@CONJUNTOS@", conj))
+                  .replace("@VERJS@", JS.replace("@CONJUNTOS@", conj)
+                                     .replace("@USO_JS@", json.dumps(USO_DA_VARREDURA))
+                                     .replace("@NENHUMA_JS@", json.dumps(
+                                         NENHUMA_CONTORNADA, ensure_ascii=False)))
                   .replace("@CABECA@", cabeca)
                   .replace("@CARTAO@", cartao)
                   .replace("@POPUP@", popup)
@@ -444,7 +456,7 @@ AJUDA = (
     u"Escolha uma série já contornada — no Acervo Local desta estação ou "
     u"apontando a pasta de outra — e ela abre em dois visores axiais, no "
     u"mesmo corte.",
-    u"Cada visor mostra um arquivo da série: o OAR, o FULL, o TS cru, os "
+    u"Cada visor mostra um arquivo da série: o STUDY, o FULL, o TS cru, os "
     u"outros modelos, os plugins e o mapa de rótulos dos estudos 3D. Ligue, "
     u"desligue e espelhe as estruturas de um lado no outro, ou leve o "
     u"conjunto visível às Reconstruções 3D.",
@@ -475,12 +487,42 @@ def _partes_do_padrao():
     cabeca = radai_ui.cabeca_de_funcao(ICONE, NOME, FRASE,
                                        radai_ui.ajuda(*AJUDA),
                                        u"autocontorno")
+    pasta = (PASTA_HTML.replace(u"@FAV@", radai_ui.botao_favorita(u"vr_pasta"))
+             .replace(u"@FILTRO@", radai_ui.filtro_de_data(u"vr_dias")))
     guias = radai_ui.abas_de_serie(u"vr_guias", [
         (u"acervo", u"Acervo Local", _acervo_html()),
-        (u"pasta", u"Aponte uma pasta", PASTA_HTML),
+        (u"pasta", u"Aponte uma pasta", pasta),
     ], padrao=u"acervo", cor_var=u"--mod-auto")
     return (cabeca, guias, radai_ui.ajuda(*AJUDA_DA_SERIE, direita=True),
             radai_modules.linha_clinica(u"autocontorno"))
+
+
+USO_DA_VARREDURA = "verseg"
+MIN_CORTES = 2
+NENHUMA_CONTORNADA = (u"Nenhuma série contornada em %s. Séries sem RTSTRUCT "
+                      u"ao lado não aparecem aqui — processe antes.")
+
+
+def linha_contornada(linha, pasta, s):
+    import radai_viewseg
+    if int(s.get("cortes") or 0) < MIN_CORTES:
+        return False
+    arquivos = radai_viewseg.arquivos_contornados(
+        pasta, s.get("uid"), s.get("irmas") or ())
+    if not arquivos:
+        return False
+    b = linha.get("bilhete") or u""
+    linha.update({"b": b, "rs": arquivos, "sem_contorno": False})
+    radai_viewseg.lembrar_modalidade(b, linha.get("modalidade"))
+    return True
+
+
+def registrar_varredura():
+    import radai_varrer
+    import radai_viewseg
+    return radai_varrer.registrar_series_de_pasta(
+        USO_DA_VARREDURA, enriquecer=linha_contornada,
+        resolver=radai_viewseg.resolver_pasta_do_exame)
 
 
 def serie_do_acervo(bilhete):
@@ -519,5 +561,7 @@ def montar(app):
     @app.get("/ver", response_class=HTMLResponse)
     def _tela():
         return radai_menu.aplicar(_pagina(), "ver")
+
+    registrar_varredura()
 
     return app

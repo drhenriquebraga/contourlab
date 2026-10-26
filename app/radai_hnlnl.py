@@ -20,6 +20,7 @@ VERSAO_DOS_PESOS = {
     "plans_sha256": ("9e5a6de4f5edb8acf936cc2697fd91e6"
                      "c03c8888a0ddc6eae093937c9ad4eaa9"),
     "fold0_bytes": 246413947,
+    "fold0_bytes_enxuto": 123319408,
 }
 
 # GUARDA: o nome sai daqui e de mais lugar nenhum; `nome_clinico` o leva
@@ -37,6 +38,67 @@ ECM_DO_FULL = {"left": "sternocleidomastoid_left",
                "right": "sternocleidomastoid_right"}
 
 CHAVES_NO_OAR = (NOME_DA_UNIAO,) + tuple(sorted(PAROTIDAS_DO_VIII.values()))
+
+CLAVICULA_DO_IVB = {"Lvl_IVb_L": "clavicula_left",
+                    "Lvl_IVb_R": "clavicula_right"}
+LADO_DA_CLAVICULA = {"clavicula_left": u"esquerda",
+                     "clavicula_right": u"direita"}
+
+
+def _clavicula_final(masks, chave, forma):
+    import numpy as np
+    b = masks.get(chave) if hasattr(masks, "get") else None
+    if b is None:
+        return None
+    b = np.asarray(b)
+    b = b if b.dtype == bool else b.astype(bool)
+    return b if b.shape == tuple(forma) and b.any() else None
+
+
+def acabamento_do_ivb(nome, m, masks, grade, log=None):
+    import numpy as np
+    m = np.asarray(m, dtype=bool)
+    chave = CLAVICULA_DO_IVB.get(str(nome))
+    clav = _clavicula_final(masks, chave, m.shape) if chave else None
+    if clav is None or not (m & clav).any():
+        return None, None, {}
+    vx = float(np.prod(grade.spacing)) / 1000.0
+    cm3 = int((m & clav).sum()) * vx
+    _dizer(log, u"   `%s`: sem a clavicula %s do mesmo lado, antes da uniao "
+                u"(-%.2f cm3)" % (nome, LADO_DA_CLAVICULA[chave], cm3))
+    return m & ~clav, None, {"clavicula_tirada_cm3": round(cm3, 2)}
+
+
+def acabamento_da_uniao_sem_a_clavicula(ivb_crus):
+    def _acabamento(nome, m, masks, grade, log=None):
+        import numpy as np
+        m = np.asarray(m, dtype=bool)
+        sai, partes = None, []
+        for n_ivb, chave in sorted(CLAVICULA_DO_IVB.items()):
+            ivb = (ivb_crus or {}).get(n_ivb)
+            clav = _clavicula_final(masks, chave, m.shape)
+            if ivb is None or clav is None:
+                continue
+            ivb = np.asarray(ivb, dtype=bool)
+            if ivb.shape != m.shape:
+                continue
+            s = m & ivb & clav
+            if s.any():
+                sai = s if sai is None else (sai | s)
+                partes.append((n_ivb, LADO_DA_CLAVICULA[chave],
+                               int(s.sum())))
+        if sai is None:
+            return None, None, {}
+        vx = float(np.prod(grade.spacing)) / 1000.0
+        _dizer(log, u"   `%s`: sem a clavicula que o Lvl_IVb do mesmo lado "
+                    u"tinha, recortada antes da uniao (%s)"
+               % (nome, u"; ".join(u"%s: -%.2f cm3 da clavicula %s"
+                                   % (n, k * vx, lado)
+                                   for n, lado, k in partes)))
+        return m & ~sai, None, {"clavicula_tirada_cm3":
+                                round(int(sai.sum()) * vx, 2)}
+    return _acabamento
+
 
 NIVEIS = dict(
     (i, {"indice": i, "candidato": MAPA_DOS_PESOS[i], "confirmado": True,
@@ -158,9 +220,12 @@ def fixado(base):
         tam = os.path.getsize(ck)
     except OSError:
         return False, u"sem o checkpoint do fold 0"
-    if tam != VERSAO_DOS_PESOS["fold0_bytes"]:
+    if tam not in (VERSAO_DOS_PESOS["fold0_bytes"],
+                   VERSAO_DOS_PESOS.get("fold0_bytes_enxuto")):
         return False, (u"o checkpoint do fold 0 tem %d bytes, e o da versao do "
-                       u"mapa tem %d" % (tam, VERSAO_DOS_PESOS["fold0_bytes"]))
+                       u"mapa tem %d (%s sem o estado do otimizador)"
+                       % (tam, VERSAO_DOS_PESOS["fold0_bytes"],
+                          VERSAO_DOS_PESOS.get("fold0_bytes_enxuto")))
     return True, (u"pesos na versao do mapa (%s, %s)"
                   % (VERSAO_DOS_PESOS["release"], VERSAO_DOS_PESOS["tarefa"]))
 
@@ -232,12 +297,12 @@ def descricao_da_parotida(lado):
 def descricao_da_parotida_ts(lado, com_viii=True):
     return (u"Parotida %s do TotalSegmentator (head_glands_cavities), com o "
             u"pos-processamento do FULL (regras de gravacao e suavizacao): "
-            u"nao e a crua do STUDY_ts, apesar do sufixo. Fica so no FULL, "
-            u"para comparacao: a parotida do OAR vem so do nivel VIII dos "
+            u"nao e a crua do RadAI_TS, apesar do sufixo. Fica so no FULL, "
+            u"para comparacao: a parotida do STUDY vem so do nivel VIII dos "
             u"niveis cervicais%s. SUGESTAO NAO APROVADA."
             % (u"esquerda" if lado == "left" else u"direita",
                u"" if com_viii else
-               u", que nao a deu nesta serie, e o OAR saiu sem ela"))
+               u", que nao a deu nesta serie, e o STUDY saiu sem ela"))
 
 
 def observacoes_dos_niveis(nomes, extensao=None):

@@ -16,7 +16,7 @@ _NINGUEM_PEDIU = (u"nenhuma série da fila pede: o motor roda só no modo "
                   u"modelos")
 _NINGUEM_PEDIU_TS = (u"nenhuma série da fila pede: o TS cru só sai no modo "
                      u"PERSONALIZADO, com a chave «TS cru (não corrigido)»")
-_SO_FAST = (u"só séries FAST na fila: o FAST grava só o RadAI_OAR_Fast")
+_SO_FAST = (u"só séries FAST na fila: o FAST grava só o RadAI_STUDY_Fast")
 
 _NINGUEM_PEDIU_HNL = (u"nenhuma série da fila pede: o arquivo próprio dos "
                       u"níveis só sai no PERSONALIZADO, pelo protocolo "
@@ -223,6 +223,31 @@ def _estudos_da_fila(estudos):
     return fora
 
 
+def achados_declarados(series):
+    fora = []
+    try:
+        import radai_sets as _rs
+    except Exception:
+        return fora
+    for s in (series or ()):
+        s = s or {}
+        if s.get("achado_declarado") is not True or not s.get(
+                "protocolo_proprio"):
+            continue
+        try:
+            p = _rs.protocolo_proprio(s.get("protocolo_proprio"),
+                                      s.get("modalidade") or "CT")
+            achados = list(_rs.selecao_do_protocolo(p)["achados"]) if p \
+                else []
+        except Exception:
+            achados = []
+        if achados:
+            fora.append({"uid8": str(s.get("uid") or "")[-8:],
+                         "protocolo": u"%s" % (p.get("nome") or p.get("id")),
+                         "tasks": achados})
+    return fora
+
+
 def montar(series, destino="", tasks=(), device="", suavizar_mm=1.5,
            incluir_nv=True, incluir_cads=False, incluir_hnlnl=False,
            incluir_moose=False,
@@ -263,6 +288,7 @@ def montar(series, destino="", tasks=(), device="", suavizar_mm=1.5,
                                           tasks=tasks, incluir_ts=incluir_ts,
                                           modos=estudos),
         "estudos": _estudos_da_fila(estudos),
+        "achados_declarados": achados_declarados(series),
         "problemas": [{"uid8": str(p.get("uid8") or "")[-8:],
                        "o_que": ("motores" if p.get("o_que") == "motores"
                                  else "tasks"),
@@ -472,6 +498,15 @@ function radaiRevAbrir(d, aoIniciar){
   + '<p class="pq" style="margin:7px 0 0" data-radai-frase>'
   + 'O que falhou aqui não está na lista acima.</p>', 'rev-alerta');
 
+ var achs = (d.achados_declarados||[]).map(function(a){
+  return '<tr><td>' + radaiRevEsc(a.protocolo) + ' <span class="pq">...'
+   + radaiRevEsc(a.uid8) + '</span></td><td class="n" data-radai-t="1" translate="no">'
+   + radaiRevEsc((a.tasks||[]).join(', ')) + '</td></tr>';
+ }).join('');
+ if(achs) h += radaiRevBloco('detecção (ACHADO) declarada', '<table>' + achs + '</table>'
+  + '<p class="pq" style="margin:7px 0 0" data-radai-frase>'
+  + 'Declarada no envio à fila, pelo protocolo próprio da série. O resultado sai no arquivo próprio do achado, nunca no STUDY.</p>', 'rev-alerta');
+
  var cjs = (d.conjuntos||[]).map(function(c){
   return '<div class="cj"><b>' + radaiRevEsc(c.infixo || '\u2014') + '</b>'
    + '<span class="' + (c.sai ? (c.entregue ? 'ent' : '') : 'nao') + '">'
@@ -487,7 +522,7 @@ function radaiRevAbrir(d, aoIniciar){
 
  var est = d.estacao || {}, m = est.memoria || {}, avisos = [];
  if(m.total_mb && m.livre_mb < 4000) avisos.push(
-  'Memória livre baixa: %s MB. Segmentar uma TC de planejamento usa vários GB — veja Configurações, Otimizar processamento.'
+  'Memória livre baixa: %s MB. Segmentar uma TC de planejamento usa vários GB.'
   .replace('%s', m.livre_mb));
  (est.disco||[]).forEach(function(u){
   if(u.aperta) avisos.push(

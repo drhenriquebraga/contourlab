@@ -20,7 +20,10 @@ def _motor():
     return _ENGINE
 
 
-def fatias_da_serie(pasta, uid=None, modalidades=("CT",)):
+def fatias_da_serie(pasta, uid=None, modalidades=None):
+    if modalidades is None:
+        # GUARDA: sem o UID, TC e RM da mesma pasta virariam uma serie so.
+        modalidades = ("CT", "MR") if uid else ("CT",)
     achados = []
     for raiz, dirs, arquivos in os.walk(str(pasta)):
         dirs[:] = [d for d in dirs if d != "_RadAI"]
@@ -92,14 +95,17 @@ class SessaoRT(object):
         mtx = _ih.get_patient_to_pixel_transformation_matrix(serie)
         nz, ny, nx = self.forma
         saida = np.zeros((ny, nx, nz), dtype=bool)
-        zs = [float(s.ImagePositionPatient[2]) for s in serie]
+        normal = _ih.get_slice_directions(serie[0])[2]
+        zs = [float(np.dot(normal, [float(v) for v in s.ImagePositionPatient]))
+              for s in serie]
         K = int(self.SUB)
         for c in getattr(roi, "ContourSequence", None) or []:
             dados = [float(v) for v in (getattr(c, "ContourData", None) or [])]
             if len(dados) < 9 or len(dados) % 3:
                 continue
             pts = np.reshape(dados, (-1, 3))
-            k = int(np.argmin([abs(z - pts[0, 2]) for z in zs]))
+            w = float(np.dot(normal, pts[0]))
+            k = int(np.argmin([abs(z - w) for z in zs]))
             px = _ih.apply_transformation_to_3d_points(pts, mtx)[:, :2]
             x0 = max(0, int(np.floor(px[:, 0].min())))
             x1 = min(nx - 1, int(np.ceil(px[:, 0].max())))
@@ -115,16 +121,39 @@ class SessaoRT(object):
             saida[y0:y1 + 1, x0:x1 + 1, k] ^= recorte
         return saida
 
+    def _por_nome_padrao(self):
+        if getattr(self, "_padroes", None) is None:
+            self._padroes = {}
+            try:
+                import radai_sets
+                for s in (getattr(self._rt.ds, "StructureSetROISequence", None)
+                          or []):
+                    n = str(getattr(s, "ROIName", ""))
+                    p = radai_sets.nome_padrao_da_descricao(
+                        getattr(s, "ROIDescription", ""))
+                    if p and n and p != n:
+                        self._padroes.setdefault(p, n)
+            except Exception:
+                self._padroes = {}
+        return self._padroes
+
     def resolver(self, chave, sufixo="_ai"):
         if not chave:
             return None
         if chave in self.nomes:
             return chave
+        # GUARDA: no STUDY com nome proprio, o nome padrao mora na descricao.
+        proprio = self._por_nome_padrao().get(str(chave))
+        if proprio in self.nomes:
+            return proprio
         alvo = str(chave)
         try:
             esperado = _motor().nome_clinico(alvo, sufixo=sufixo)
             if esperado in self.nomes:
                 return esperado
+            proprio = self._por_nome_padrao().get(esperado)
+            if proprio in self.nomes:
+                return proprio
         except Exception:
             pass
 
@@ -216,16 +245,6 @@ def abrir_ct(pasta_serie, uid=None):
     forma = tuple(int(v) for v in reversed(imagem.GetSize()))
     ct = sitk.GetArrayFromImage(imagem).astype(np.int16, copy=False)
     return SessaoRT(stage, "", grade, forma, [], None, ct=ct)
-
-
-def gravar(pasta_limpa, mascaras, destino, rotulo="RadAI_calibrado"):
-    engine = _motor()
-    caminho, nomes = engine.build_rtstruct(str(pasta_limpa), mascaras,
-                                          versao_worker=rotulo,
-                                          descontar=False)
-    import shutil
-    shutil.copy2(str(caminho), str(destino))
-    return str(destino), nomes
 
 
 def medir_ciclo(original, devolvida, grade):

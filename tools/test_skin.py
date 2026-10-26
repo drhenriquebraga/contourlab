@@ -366,23 +366,22 @@ def _aplica_a_traqueia(fonte, funcao):
 
 
 def teste_os_conjuntos_de_estudo_perderam_o_RadAI():
-    secao(u"os conjuntos de estudo perderam o RadAI_")
+    secao(u"os rotulos dos conjuntos vem de um lugar so (radai_sets)")
     fonte = io.open(_componentes.fonte("app/radai_output.py"),
                     encoding="utf-8").read()
     codigo = re.sub(r"(?m)^\s*#.*$", "", fonte)
-    checar(u"o rotulo padrao e `STUDY_`", '"STUDY_" + cod' in codigo, "")
-    checar(u"  e nao sobrou `RadAI_STUDY_` no codigo",
-           "RadAI_STUDY_" not in codigo, "")
+    checar(u"o rotulo padrao vem de `radai_sets.rotulo_dicom`",
+           "radai_sets.rotulo_dicom(cod)" in codigo, "")
+    checar(u"  e nao sobrou `\"STUDY_\" + cod` no codigo",
+           '"STUDY_" + cod' not in codigo, "")
     import radai_sets as CJ
     for c in CJ.CONJUNTOS:
-        if c["cod"] == "oar":
-            continue
-        r = "STUDY_" + c["cod"]
+        r = CJ.rotulo_dicom(c["cod"])
         checar(u"`%s` cabe no SH de 16" % r, len(r) <= 16,
                u"%d caracteres" % len(r))
-    checar(u"o entregue continua SEM `STUDY_`",
-           not any(c["cod"] == "oar" and "STUDY" in str(c.get("rotulo_curto", ""))
-                   for c in CJ.CONJUNTOS))
+    checar(u"o entregue e o RadAI_STUDY, e o FULL o RadAI_FULL",
+           CJ.rotulo_dicom("oar") == "RadAI_STUDY"
+           and CJ.rotulo_dicom("full") == "RadAI_FULL")
 
 
 _EXT = {}

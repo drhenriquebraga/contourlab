@@ -74,6 +74,8 @@ _cleanup.adotar_prefixo('radai_caso_vigia_')
 _cleanup.adotar_prefixo('radai_caso_lote_')
 _cleanup.adotar_prefixo('radai_lote_duas_portas_')
 _cleanup.adotar_prefixo('radai_vigia_prof_')
+_cleanup.adotar_prefixo('radai_reserva_')
+_cleanup.adotar_prefixo('radai_reserva_js_')
 _cleanup.adotar_prefixo('radai_familia_')
 _cleanup.adotar_prefixo('radai_modalidade_')
 _cleanup.adotar_prefixo('radai_tx_')
@@ -746,12 +748,20 @@ def teste_config_tolerante():
     mod, root, base = montar(
         [("PAC_1", agora - timedelta(days=1), 8)],
         extra={"PORT": "8777 # painel", "MIN_SLICES": "vinte",
-               "LOCK_MAX_H": "2,5", "CHAVE_INVENTADA": "1"})
+               "LOCK_MAX_H": "2,5", "CHAVE_INVENTADA": "1",
+               "GUIA_VISTO": "1"})
     checar("comentario na mesma linha nao quebra a porta", mod.PORT == 8777, str(mod.PORT))
     checar("numero invalido cai no padrao", mod.MIN_SLICES == 20, str(mod.MIN_SLICES))
     checar("virgula decimal e aceita", abs(mod.LOCK_MAX_S - 2.5 * 3600) < 1, str(mod.LOCK_MAX_S))
     checar("chave desconhecida vira aviso, nao erro",
            any("CHAVE_INVENTADA" in a for a in mod.AVISOS_CFG), str(mod.AVISOS_CFG))
+    checar(u"GUIA_VISTO, que o guia grava, e chave conhecida (sem aviso a "
+           u"cada arranque)",
+           "GUIA_VISTO" in mod.DEFAULTS
+           and not [a for a in mod.AVISOS_CFG if "GUIA_VISTO" in a],
+           str(mod.AVISOS_CFG))
+    checar(u"  e nao vira caixa de texto no /config (o guia tem a tela dele)",
+           "GUIA_VISTO" in _app_import("radai_panel").FORA_DA_TELA)
 
 
 def teste_chave_renomeada_continua_sendo_lida():
@@ -2356,7 +2366,7 @@ def teste_o_uid_nao_tira_o_marcador_da_pasta_do_paciente():
     secao(u"o UID nao tira o marcador da pasta do paciente")
     import radai_sets as S
     import radai_watcher as mod
-    base = tempfile.mkdtemp()
+    base = tempfile.mkdtemp(prefix="radai_eleg_")
     _TEMPS.append(base)
 
     maus = ["../../../../../../Users/Public/pwn", "..\\..\\pwn", "a/b",
@@ -4377,13 +4387,13 @@ def teste_a_rm_do_pescoco_roda_so_a_base_de_rm_e_leva_a_modalidade():
     checar(u"TODO build_rtstruct recebeu modalidade=MR -- o FULL, de onde "
            u"sai o entregue (%d arquivo(s))" % len(motor.rts),
            len(motor.rts) >= 1 and all(m == "MR" for m in mods)
-           and "STUDY_full" in rotulos,
+           and "RadAI_FULL" in rotulos,
            u"%s | %s" % (mods, rotulos))
     checar(u"  e o vigia NAO gravou o TS cru (v8.3: so por pedido)",
-           "STUDY_ts" not in rotulos, str(rotulos))
+           "RadAI_TS" not in rotulos, str(rotulos))
     def _tasks_do_full(m):
         for k in (m.rts if m else []):
-            if k.get("rotulo") == "STUDY_full":
+            if k.get("rotulo") == "RadAI_FULL":
                 return list(k.get("tasks") or [])
         return None
     checar(u"o FULL (de onde sai o entregue) recebeu `tasks_ok` = o que "
@@ -4481,13 +4491,13 @@ def teste_a_serie_do_vigia_na_cadeia_da_v82():
     checar(u"sem o TS cru a serie SAI (o entregue vem das cruas)",
            ok2 is True, str(ok2))
     rotulos = [k.get("rotulo") for k in motor.rts]
-    checar(u"  o FULL foi montado", "STUDY_full" in rotulos, str(rotulos))
+    checar(u"  o FULL foi montado", "RadAI_FULL" in rotulos, str(rotulos))
     checar(u"  e o `TS_` NAO, nem com ENTREGAR_TS=1 de um config antigo "
            u"(v8.3: o vigia nunca o grava)",
-           "STUDY_ts" not in rotulos, str(rotulos))
-    checar(u"  e nenhum motor de comparacao foi gravado (STUDY_nv, _cads, "
-           u"_mse)", not [r for r in rotulos
-                          if r in ("STUDY_nv", "STUDY_cads", "STUDY_mse")],
+           "RadAI_TS" not in rotulos, str(rotulos))
+    checar(u"  e nenhum motor de comparacao foi gravado (RadAI_NV, _CADS, "
+           u"_MSE)", not [r for r in rotulos
+                          if r in ("RadAI_NV", "RadAI_CADS", "RadAI_MSE")],
            str(rotulos))
     checar(u"o relatorio dos conjuntos sai no log do vigia",
            any(l.startswith("conjuntos gravados:") for l in linhas),
@@ -4639,13 +4649,13 @@ def teste_os_niveis_seguem_o_pescoco_e_o_recorte_chega_ao_motor():
     checar(u"  e sem o pescoco confirmado pelo MOTOR (o fantoma nao tem "
            u"mandibula), os constritores ficam de fora: a trava vence",
            len(pedidos) == 1 and "headneck_muscles" not in pedidos[0], pedidos)
-    full = motor.chaves.get("STUDY_full") or []
+    full = motor.chaves.get("RadAI_FULL") or []
     checar(u"  e os niveis ENTRAM NO FULL (spec 1.1: «entra no FULL»)",
            "LNL07" in full and "LNL_Union" in full, str(full))
     checar(u"  e seguem a MESMA medida da anatomia (o `pescoco_no_campo` do "
            u"modulo, dublado ao contrario, nao foi quem decidiu)",
            len(pedidos) == 1, pedidos)
-    _kw_full = [k for k in motor.rts if k.get("rotulo") == "STUDY_full"]
+    _kw_full = [k for k in motor.rts if k.get("rotulo") == "RadAI_FULL"]
     obs = (_kw_full[0].get("observacoes") or {}) if _kw_full else {}
     checar(u"  e o FULL leva a descricao de cada nivel (a ressalva do nome "
            u"neutro)",
@@ -4672,7 +4682,7 @@ def teste_os_niveis_seguem_o_pescoco_e_o_recorte_chega_ao_motor():
            recs and all(r is True for r in recs), recs)
     checar(u"SEM PESCOCO (o fantoma de fabrica), o vigia NAO roda os niveis",
            ok is True and pedidos == [], pedidos)
-    full = (motor.chaves.get("STUDY_full") or []) if motor else []
+    full = (motor.chaves.get("RadAI_FULL") or []) if motor else []
     checar(u"  e nenhum nivel entra no FULL",
            not [k for k in full if k.startswith("LNL")], str(full))
 
@@ -6356,9 +6366,9 @@ def teste_as_falhas_da_serie_levam_o_traceback():
             u"                                wlog(\"   \" + _l)\n"
             u"                        except Exception:\n"
             u"                            pass\n\n"
-            u"                marcar_etapa(\"montando o FULL e o OAR\"")
+            u"                marcar_etapa(\"montando o FULL e o STUDY\"")
     isca = fonte.replace(alvo, u"\n                marcar_etapa("
-                         u"\"montando o FULL e o OAR\"", 1)
+                         u"\"montando o FULL e o STUDY\"", 1)
     sem2 = _falhas_sem_traceback(isca, funcoes)
     checar(u"ISCA: o `except` dos niveis cervicais sem o traceback e acusado, "
            u"com a linha",
@@ -6964,10 +6974,10 @@ def teste_o_vigia_e_sempre_auto_e_nao_grava_ts_cru():
     checar(u"  e sem `oar_fora` (o «x» e do PERSONALIZADO)",
            pedidos and not pedidos[0].get("oar_fora"), str(pedidos))
     rot = _gravados_e_rotulos(motor)
-    checar(u"nada de TS cru: nenhum `STUDY_ts` gravado, e a porta do cru "
-           u"nunca e chamada", "STUDY_ts" not in rot and not crus, rot)
-    checar(u"  e o FULL (`STUDY_full`) e gravado",
-           "STUDY_full" in rot, rot)
+    checar(u"nada de TS cru: nenhum `RadAI_TS` gravado, e a porta do cru "
+           u"nunca e chamada", "RadAI_TS" not in rot and not crus, rot)
+    checar(u"  e o FULL (`RadAI_FULL`) e gravado",
+           "RadAI_FULL" in rot, rot)
     done = mod.read_marker(s["dir"], s["uid"], "done") or {}
     checar(u"o `done` grava modo=auto (spec 1.1) e o plano de dispositivo "
            u"em chave propria", done.get("modo") == "auto"
@@ -6984,9 +6994,9 @@ def teste_o_vigia_e_sempre_auto_e_nao_grava_ts_cru():
         ok2, motor2, _m2, _s2, _l2 = _rodar_anatomia({"torax"})
     finally:
         RO.Saida.full_e_oar = real_fo
-    checar(u"ISCA: a porta que gravasse o cru junto deixa o `STUDY_ts` -- e a "
+    checar(u"ISCA: a porta que gravasse o cru junto deixa o `RadAI_TS` -- e a "
            u"checagem «nada de TS cru» o ve",
-           motor2 is not None and "STUDY_ts" in _gravados_e_rotulos(motor2),
+           motor2 is not None and "RadAI_TS" in _gravados_e_rotulos(motor2),
            _gravados_e_rotulos(motor2) if motor2 else None)
     import ast as _ast
     fonte = io.open(_componentes.fonte("app/radai_watcher.py"),
@@ -7214,7 +7224,7 @@ def teste_a_notificacao_nao_derruba_nem_segura_o_laco():
     checar(u"o toast de SUCESSO diz a serie (…uid8), o que foi gravado e que "
            u"e sugestao nao aprovada",
            u"pronta" in titulo and (u"…" + uid8) in texto
-           and u"RadAI_OAR" in texto and u"FULL" in texto
+           and u"RadAI_STUDY" in texto and u"FULL" in texto
            and u"não aprovada" in texto, (titulo, texto))
     checar(u"  sem PatientID nem caminho", u"PAC_TOAST" not in texto + titulo
            and u"\\" not in texto and u":/" not in texto, texto)
@@ -8533,7 +8543,19 @@ def teste_fechar_pelo_x_nao_mata_a_serie():
         envelhecer(root, 60)
         mod.STATE["ligado"] = True
         estado = {"fila": None, "proxima_varredura": 0.0, "turno": True}
-        mod._uma_volta(estado)
+        linhas_do_laco = []
+        velho_wlog = mod.wlog
+        mod.wlog = lambda m="": linhas_do_laco.append(str(m))
+        try:
+            mod._uma_volta(estado)
+        finally:
+            mod.wlog = velho_wlog
+        checar(u"  e o laco diz por que espera numa frase que nao supoe quem "
+               u"pediu (o X ou a atualizacao em espera)",
+               mod.FRASE_DO_FECHAR_AO_FIM in linhas_do_laco
+               and not [l for l in linhas_do_laco
+                        if u"navegador foi fechado" in l],
+               str(linhas_do_laco)[-300:])
         checar(u"  e o vigia nao reivindica serie nova",
                not [q for q in fila_de(mod)[0]
                     if mod.has_marker(q["dir"], q["uid"], "lock")])
@@ -8706,6 +8728,58 @@ def teste_o_pid_reaproveitado_e_dono_morto():
         filho.wait(10)
 
 
+def teste_o_processo_que_saiu_e_dono_morto_com_o_handle_aberto():
+    secao(u"o processo que saiu e dono morto, mesmo com alguem segurando o "
+          u"handle dele")
+    if os.name != "nt":
+        checar(u"(so no Windows) o codigo de saida vem do GetExitCodeProcess",
+               True)
+        return
+    import ctypes
+    import subprocess as _sp
+    from ctypes import wintypes
+
+    def _so_abre(pid):
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.restype = wintypes.HANDLE
+        h = k32.OpenProcess(0x1000, False, int(pid))
+        if h:
+            k32.CloseHandle(h)
+        return bool(h)
+    agora = datetime.now()
+    mod, root, base = montar([("PAC_ZUMBI", agora - timedelta(days=1), 8)])
+    envelhecer(root, 60)
+    s = list(mod.scan_root()[0].values())[0]
+    filho = _sp.Popen([sys.executable, "-c", "import os; os._exit(9)"])
+    filho.wait(60)
+    checar(u"o processo saiu (codigo 9), e o Popen ainda segura o handle dele",
+           filho.returncode == 9, str(filho.returncode))
+    checar(u"o processo que saiu nao conta como vivo",
+           mod._processo_vivo(filho.pid) is False)
+    checar(u"(isca) so com o OpenProcess, o processo que saiu parece vivo",
+           _so_abre(filho.pid) is True)
+    mod.m_path(s["dir"], s["uid"], "lock", criar=True).write_text(json.dumps({
+        "machine": mod.MACHINE, "pid_os": filho.pid,
+        "token": "%s#%d" % (mod.MACHINE, filho.pid),
+        "heartbeat": time.time() - 1.0, "criado": mod._criado_em(filho.pid),
+        "start": agora.strftime("%Y-%m-%d %H:%M:%S")}), encoding="utf-8")
+    checar(u"a trava dele, com batimento recente, e de dono morto",
+           mod._diagnostico_do_lock(s["dir"], s["uid"])[0] == "morto")
+    vivo = mod._processo_vivo
+    mod._processo_vivo = _so_abre
+    try:
+        checar(u"(isca) so com o OpenProcess, a trava parece «trabalhando» "
+               u"(a tela dizia «processando» de um processo que morreu)",
+               mod._diagnostico_do_lock(s["dir"], s["uid"])[0]
+               == "trabalhando")
+    finally:
+        mod._processo_vivo = vivo
+    checar(u"e ao abrir ela e solta",
+           mod.soltar_trava_morta(s["dir"], s["uid"]) is True
+           and not mod.has_marker(s["dir"], s["uid"], "lock"))
+    del filho
+
+
 def teste_o_marcador_da_v84_sem_rtstruct_volta_para_a_fila():
     secao(u"o marcador de pronta que a v8.4 gravou sem RTSTRUCT nao vale")
     agora = datetime.now()
@@ -8789,6 +8863,66 @@ def teste_o_marcador_da_v84_sem_rtstruct_volta_para_a_fila():
     checar(u"(isca) sem afastar o marcador sem arquivo, a serie fica pulada "
            u"como pronta (o defeito do campo)",
            "PAC_ISCA" not in pids_da_fila(fila_de(mod2)[0]))
+
+
+def teste_a_falha_do_import_fora_do_caminho_volta_a_fila():
+    secao("a serie que falhou pelo import fora do caminho volta a fila")
+    agora = datetime.now()
+    mod, root, base = montar([("PAC_ARQ", agora - timedelta(days=1), 8),
+                              ("PAC_OUTRA", agora - timedelta(days=2), 8)])
+    envelhecer(root, 60)
+    series, done = mod.scan_root()
+    por_pid = dict((s["pid"], (uid, s)) for uid, s in series.items())
+    uid_a, s_a = por_pid["PAC_ARQ"]
+    uid_b, s_b = por_pid["PAC_OUTRA"]
+    mod.m_path(s_a["dir"], uid_a, "fail", criar=True).write_text(json.dumps(
+        {"tries": 3, "last_error": "name '_arq' is not defined",
+         "ultimo_tipo": "deterministico", "assinatura": "e7d4e7d7d2",
+         "em_espera": "e7d4e7d7d2"}), encoding="utf-8")
+    mod.m_path(s_b["dir"], uid_b, "fail", criar=True).write_text(json.dumps(
+        {"tries": 3, "last_error": "outra causa, de verdade"}),
+        encoding="utf-8")
+    fila = mod.build_queue(series, done)
+    checar("a serie da assinatura do import volta a fila",
+           [s["uid"] for s in fila] == [uid_a], str([s["pid"] for s in fila]))
+    checar("  e o marcador de falha dela saiu",
+           not mod.has_marker(s_a["dir"], uid_a, "fail"))
+    checar("  (isca) a que falhou por outra causa continua fora, com o marcador",
+           [x["uid"] for x in mod.PULADAS_POR_FALHA] == [uid_b]
+           and mod.has_marker(s_b["dir"], uid_b, "fail"))
+    checar("  e o log diz por que ela voltou",
+           "import fora do caminho" in "\n".join(list(mod.LOGBUF)))
+
+
+def teste_a_fila_que_esvazia_depois_de_uma_pronta_revarre_na_hora():
+    secao("a fila do vigia que esvazia depois de uma serie pronta revarre na hora")
+    agora = datetime.now()
+    mod, root, base = montar([("PAC_REV", agora - timedelta(days=1), 8)])
+    envelhecer(root, 60)
+    estado = {"fila": None, "proxima_varredura": 0.0}
+    for _ in range(10):
+        mod._uma_volta(estado)
+        if mod.STATE["done_today"]:
+            break
+    checar("a serie ficou pronta", mod.STATE["done_today"] >= 1,
+           str(mod.STATE["done_today"]))
+    checar("  e a proxima varredura e agora, e nao daqui a SCAN_EVERY",
+           estado.get("proxima_varredura") == 0.0,
+           str(estado.get("proxima_varredura")))
+    checar("  e o log diz por que", "varro de novo agora" in
+           "\n".join(list(mod.LOGBUF)))
+
+    mod2, root2, base2 = montar([("PAC_FALHA", agora - timedelta(days=1), 8)],
+                                machine="PC_FALHA")
+    envelhecer(root2, 60)
+    mod2.process_series = lambda s: False
+    estado2 = {"fila": None, "proxima_varredura": 0.0}
+    mod2._uma_volta(estado2)
+    if estado2.get("fila"):
+        mod2._uma_volta(estado2)
+    checar("(isca) a que nao ficou pronta espera o intervalo",
+           estado2.get("proxima_varredura", 0) > time.time() + 60,
+           str(estado2.get("proxima_varredura")))
 
 
 def teste_tres_falhas_de_recurso_seguidas_param_o_vigia():
@@ -9004,6 +9138,191 @@ def teste_o_marcador_de_outra_estacao_com_destino_proprio_fica():
            isca.marcador_sem_rtstruct(de_a["dir"], de_a["uid"]) is True)
 
 
+_ROTEIRO_DA_RESERVA = u"""
+var EL = {};
+function el(id){
+ if(!EL[id]) EL[id] = {id: id, value: '', disabled: false, title: '',
+  textContent: '', innerHTML: '', style: {}, attrs: {},
+  setAttribute: function(k, v){ this.attrs[k] = v },
+  focus: function(){}};
+ return EL[id];
+}
+var document = {getElementById: el};
+var CHAMADAS = [], RESP = {};
+function fetch(url, o){
+ CHAMADAS.push(url + ' ' + ((o && o.body) || ''));
+ var r = RESP[url];
+ return Promise.resolve({json: function(){ return Promise.resolve(r) }});
+}
+@FUNCOES@
+async function cenario(nome, resp, acao){
+ EL = {}; CHAMADAS = []; RESP = resp;
+ el('rootIn').value = 'antes';
+ await acao();
+ await new Promise(function(r){ setTimeout(r, 0) });
+ return {nome: nome, root: el('rootIn').value, fav_desligado: el('btFav').disabled,
+         fav_titulo: el('btFav').title, mapa: el('fpMapa').textContent,
+         mapear_desligado: el('fpMapear').disabled, chamadas: CHAMADAS};
+}
+(async function(){
+ var out = {};
+ out.fav = await cenario('fav', {'/api/pastas/favorita': {favorita: 'D:/EXAMES'}}, favUsar);
+ out.semfav = await cenario('semfav', {'/api/pastas/favorita': {favorita: ''}}, favUsar);
+ out.mapeou = await cenario('mapeou', {'/api/pastas/mapear': {ok: true, novas: ['Z:']},
+   '/api/pastas': {caminho: 'Z:', pastas: [], unidades: []}}, mapearUnidade);
+ out.cancelou = await cenario('cancelou', {'/api/pastas/mapear':
+   {ok: false, cancelado: true, novas: [], erro: 'CANCELADO'}}, mapearUnidade);
+ console.log('JSON:' + JSON.stringify(out));
+})();
+"""
+
+
+def _funcao_da_pagina(js, nome):
+    i = js.find(u"function %s(" % nome)
+    if i < 0:
+        return u""
+    k, prof = js.find(u"{", i), 0
+    for j in range(k, len(js)):
+        if js[j] == u"{":
+            prof += 1
+        elif js[j] == u"}":
+            prof -= 1
+            if prof == 0:
+                return js[i:j + 1]
+    return u""
+
+
+def _roteiro_da_reserva(pagina):
+    import subprocess
+    node = shutil.which("node")
+    if not node:
+        return None, u"sem node"
+    funcoes = u"\n".join(_funcao_da_pagina(pagina, n) for n in (
+        "favPintar", "favCarregar", "favUsar", "mapearUnidade", "listarPastas"))
+    alvo = os.path.join(novo_temp("radai_reserva_js_"), "t.js")
+    io.open(alvo, "w", encoding="utf-8").write(
+        _ROTEIRO_DA_RESERVA.replace(u"@FUNCOES@", funcoes))
+    r = subprocess.run([node, alvo], capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", timeout=60)
+    for ln in reversed((r.stdout or u"").splitlines()):
+        if ln.startswith(u"JSON:"):
+            return json.loads(ln[5:]), u""
+    return None, ((r.stderr or u"") + (r.stdout or u""))[-400:]
+
+
+def _a_estrela_preenche(d):
+    return bool(d) and (d["fav"]["root"] == u"D:/EXAMES"
+                        and not d["fav"]["fav_desligado"]
+                        and d["fav"]["fav_titulo"] == u"Preencher com a pasta favorita"
+                        and all(c.startswith(u"/api/pastas/favorita ")
+                                for c in d["fav"]["chamadas"])
+                        and d["semfav"]["root"] == u"antes"
+                        and d["semfav"]["fav_desligado"]
+                        and d["semfav"]["fav_titulo"]
+                        == u"Nenhuma pasta favorita configurada")
+
+
+def _o_mapear_relista(d):
+    return bool(d) and (u'/api/pastas {"caminho":"Z:"}' in d["mapeou"]["chamadas"]
+                        and d["mapeou"]["mapa"] == u"Unidade mapeada: Z:"
+                        and d["cancelou"]["mapa"] == u"CANCELADO"
+                        and not d["cancelou"]["mapear_desligado"]
+                        and not any(c.startswith(u"/api/pastas {")
+                                    for c in d["cancelou"]["chamadas"]))
+
+
+def teste_a_pagina_de_reserva_tem_a_estrela_e_o_mapear():
+    secao(u"a pagina de reserva (vigia sem o painel): a estrela e o Mapear")
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    import radai_ui
+    import radai_varrer
+    base = novo_temp("radai_reserva_")
+    fav = os.path.join(base, "favorita")
+    os.makedirs(os.path.join(fav, "SERIE_1"))
+    io.open(os.path.join(fav, "corte.dcm"), "w").close()
+    tinha, antes = "radai_panel" in sys.modules, sys.modules.get("radai_panel")
+    sys.modules["radai_panel"] = None
+    try:
+        mod = carregar(os.path.join(base, "share"), base,
+                       extra={"PASTA_FAVORITA": fav})
+    finally:
+        if tinha:
+            sys.modules["radai_panel"] = antes
+        else:
+            sys.modules.pop("radai_panel", None)
+    checar(u"sem o painel, o vigia serve a pagina de reserva",
+           mod.radai_panel is None, mod._PAINEL_ERRO)
+    cli = TestClient(mod.app)
+    pag = cli.get("/").text
+    checar(u"a estrela da pasta favorita fica ao lado do campo da pasta",
+           u'id="btFav"' in pag and radai_ui.icone(u"estrela") in pag
+           and pag.find(u'id="rootIn"') < pag.find(u'id="btFav"')
+           < pag.find(u'id="btPastas"'))
+    checar(u"e o seletor tem o «Mapear nova unidade de rede»",
+           u'id="fpMapear"' in pag and u"Mapear nova unidade de rede" in pag
+           and radai_ui.icone(u"rede") in pag)
+    checar(u"nenhuma marca de icone sobra crua na pagina servida",
+           u"@ICO_" not in pag, re.findall(r"@ICO_\w+@", pag)[:3])
+    checar(u"  ISCA: a pagina servida crua, como antes, mostrava as marcas",
+           u"@ICO_PASTA@" in mod.PAGE)
+
+    def _rotas(cliente):
+        pedidos = []
+        original = radai_varrer.mapear_unidade
+        radai_varrer.mapear_unidade = lambda: (pedidos.append(1) or
+                                               {"ok": True, "novas": ["Z:"]})
+        os.environ["RADAI_CONFIG"] = str(getattr(mod, "CFG_PATH", u""))
+        try:
+            rf = cliente.post("/api/pastas/favorita", json={})
+            rp = cliente.post("/api/pastas", json={"caminho": fav})
+            rm = cliente.post("/api/pastas/mapear", json={})
+        finally:
+            radai_varrer.mapear_unidade = original
+            os.environ.pop("RADAI_CONFIG", None)
+        if any(r.status_code != 200 for r in (rf, rp, rm)):
+            return None
+        return rf.json(), rp.json(), rm.json(), pedidos
+    resp = _rotas(cli)
+    checar(u"sem o painel, as tres rotas do seletor respondem", resp is not None)
+    if resp:
+        rf, rp, rm, pedidos = resp
+        checar(u"a estrela le a pasta favorita do config",
+               rf.get("favorita") == fav, rf)
+        checar(u"o seletor lista as pastas, e nunca arquivo",
+               [p.get("nome") for p in rp.get("pastas") or []] == ["SERIE_1"]
+               and not rp.get("arquivos"), rp)
+        checar(u"o Mapear chama o mapeamento do radai_varrer (dublado)",
+               pedidos == [1] and rm == {"ok": True, "novas": ["Z:"]}, rm)
+    checar(u"  ISCA: sem as rotas da reserva, o seletor respondia 404",
+           _rotas(TestClient(FastAPI())) is None)
+    original = radai_varrer.mapear_unidade
+
+    def _quebra():
+        raise OSError("sem mpr")
+    radai_varrer.mapear_unidade = _quebra
+    try:
+        rm = cli.post("/api/pastas/mapear", json={}).json()
+    finally:
+        radai_varrer.mapear_unidade = original
+    checar(u"a falha do mapeamento volta como erro, sem derrubar a rota",
+           rm.get("ok") is False and u"sem mpr" in rm.get("erro", u"")
+           and rm.get("novas") == [], rm)
+
+    d, err = _roteiro_da_reserva(pag)
+    checar(u"a estrela preenche o campo com a favorita, sem gravar nada, e "
+           u"fica apagada sem favorita", _a_estrela_preenche(d), d or err)
+    checar(u"o Mapear relista na unidade nova, e o cancelado so diz o motivo",
+           _o_mapear_relista(d), d or err)
+    isca, err = _roteiro_da_reserva(pag.replace(u"  i.value=f;\n", u"", 1))
+    checar(u"  ISCA: a estrela que nao preenche o campo reprova",
+           isca is not None and not _a_estrela_preenche(isca), isca or err)
+    isca, err = _roteiro_da_reserva(pag.replace(u"return listarPastas(",
+                                                u"return (", 1))
+    checar(u"  ISCA: o Mapear que nao relista reprova",
+           isca is not None and not _o_mapear_relista(isca), isca or err)
+
+
 def main():
     print("test_watcher | vigia em DRY_RUN sobre fantomas sinteticos")
     testes = [teste_a_escolha_do_operador_manda_na_escada,
@@ -9117,9 +9436,13 @@ def main():
               teste_fechar_pelo_x_nao_mata_a_serie,
               teste_o_turno_na_fila_segura_o_fechar_e_a_tela_que_volta_solta_o_lote,
               teste_o_pid_reaproveitado_e_dono_morto,
+              teste_o_processo_que_saiu_e_dono_morto_com_o_handle_aberto,
               teste_o_marcador_da_v84_sem_rtstruct_volta_para_a_fila,
               teste_o_marcador_de_outra_estacao_com_destino_proprio_fica,
-              teste_tres_falhas_de_recurso_seguidas_param_o_vigia]
+              teste_tres_falhas_de_recurso_seguidas_param_o_vigia,
+              teste_a_falha_do_import_fora_do_caminho_volta_a_fila,
+              teste_a_fila_que_esvazia_depois_de_uma_pronta_revarre_na_hora,
+              teste_a_pagina_de_reserva_tem_a_estrela_e_o_mapear]
     for t in testes:
         try:
             t()

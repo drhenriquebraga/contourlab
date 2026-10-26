@@ -65,6 +65,12 @@ TotalSegmentator
   com a biblioteca e nao rodam de fabrica: rodam por ato declarado de quem
   opera, e o log anuncia com a palavra ACHADO.
 
+  A partir da v8.7, nos pacotes montados e tambem na instalacao direta numa
+  estacao, o preparador da Suite tira dos checkpoints destes pesos que ele
+  baixa o estado do otimizador, que so serve ao treino; os pesos da rede
+  ficam identicos byte a byte. A modificacao (Apache License
+  2.0, secao 4, item b) esta declarada no NOTICE da Suite.
+
   Citacao pedida pelos autores:
     Wasserthal J., Breit H.-C., Meyer M.T., et al. TotalSegmentator: Robust
     Segmentation of 104 Anatomic Structures in CT Images.
@@ -136,9 +142,21 @@ CADS (variante `open`)
   variantes com licencas diferentes; e a `open` (CC BY-SA 4.0) que este
   componente baixa, de proposito.
 
+  A CC BY-SA 4.0 DA VARIANTE `open` E A QUE A PUBLICACAO DELA DECLARA, no
+  titulo e no texto da release cads-model-open_v1.0.0. O arquivo
+  LICENSE_MODEL da raiz do repositorio e anterior a essa publicacao: ele
+  ainda diz CC BY-NC-SA 4.0 para os pesos das releases e chama a versao
+  aberta de "em preparo".
+
   O SHAREALIKE TEM CAUDA: rodar o modelo e usar o contorno que sai dele NAO
   produz obra derivada. Fazer fine-tune com dado da casa produz, e esse peso
   teria de ser redistribuido sob CC BY-SA 4.0.
+
+  Nos pacotes montados a partir da v8.7 -- e nao na instalacao direta numa
+  estacao --, o preparador da Suite tira do checkpoint o estado do otimizador,
+  que so serve ao treino; os pesos da rede ficam identicos byte a byte. A
+  modificacao (CC BY-SA 4.0, secao 3(a)(1)(B); o checkpoint modificado
+  continua sob a CC BY-SA 4.0) esta declarada no NOTICE da Suite.
 
 --------------------------------------------------------------------------------
 Niveis linfonodais de cabeca e pescoco
@@ -166,6 +184,11 @@ Niveis linfonodais de cabeca e pescoco
   anatomico, e nao orgao nem CTV. A uniao dos niveis (LNL_UNION_ai) NAO E OAR
   NEM CTV, e a descricao da estrutura diz isso.
 
+  Nos pacotes montados a partir da v8.7 -- e nao na instalacao direta numa
+  estacao --, o preparador da Suite tira dos dez checkpoints do ensemble o
+  estado do otimizador, que so serve ao treino; os pesos da rede ficam
+  identicos byte a byte. A modificacao esta declarada no NOTICE da Suite.
+
 --------------------------------------------------------------------------------
 MOOSE (ENHANCE.PET)
 --------------------------------------------------------------------------------
@@ -189,6 +212,12 @@ MOOSE (ENHANCE.PET)
   O PROTOCOLO DE DELINEAMENTO DELES E DE MEDICINA NUCLEAR (PET/CT de corpo
   inteiro), e nao de radioterapia. Por isso o conjunto sai em arquivo proprio,
   com o sufixo `_mse`, e NAO entra no RTSTRUCT entregue.
+
+  Nos pacotes montados a partir da v8.7 -- e nao na instalacao direta numa
+  estacao --, o preparador da Suite tira dos checkpoints dos dois modelos o
+  estado do otimizador, que so serve ao treino; os pesos da rede ficam
+  identicos byte a byte. A modificacao (CC BY 4.0, secao 3(a)(1)(B)) esta
+  declarada no NOTICE da Suite.
 
 --------------------------------------------------------------------------------
 CT Brain Segmentation Radiotherapy (estruturas do encefalo em TC)
@@ -219,6 +248,11 @@ CT Brain Segmentation Radiotherapy (estruturas do encefalo em TC)
     doi:10.1007/978-3-030-71827-5_1
 
   SO TC, e so com o encefalo no campo.
+
+  Nos pacotes montados a partir da v8.7 -- e nao na instalacao direta numa
+  estacao --, o preparador da Suite tira do checkpoint o estado do otimizador,
+  que so serve ao treino; os pesos da rede ficam identicos byte a byte. A
+  modificacao esta declarada no NOTICE da Suite.
 
   A origem no Hugging Face declara a licenca MIT no cartao do modelo e nao
   publica arquivo LICENSE nem linha de copyright; os detentores sao os
@@ -255,8 +289,46 @@ tools/data/nv_segment_ct_labels.json
             tools/test_nv_segment.py o le; o programa deriva o mesmo mapa
             dos arquivos do modelo baixado, na estacao.
   Origem    https://huggingface.co/nvidia/NV-Segment-CT
-  Licenca   a do repositorio do modelo (NVIDIA Open Model License Agreement,
-            na secao do NV-Segment-CT, acima)
+  Licenca   Apache License 2.0: o LICENSE do repositorio do modelo poe sob
+            ela todo arquivo que nao e peso, e o mapa sai do
+            configs/metadata.json; a NVIDIA Open Model License Agreement
+            vale so para os pesos.
+            https://huggingface.co/nvidia/NV-Segment-CT/blob/main/LICENSE
+
+--------------------------------------------------------------------------------
+app/engine.py, a funcao _adicionar_roi
+--------------------------------------------------------------------------------
+  O que     a montagem da ROI do rt-utils 1.2.7 (o metodo add_roi da classe
+            RTStruct), reproduzida em poucas linhas e chamando as funcoes do
+            proprio rt-utils, para gravar o ContourData ja convertido em
+            texto; com outra versao do rt-utils instalada, o motor usa o
+            add_roi original.
+  Origem    https://github.com/qurit/rt-utils
+  Licenca   MIT
+            https://spdx.org/licenses/MIT.html
+
+  O aviso da licenca MIT do rt-utils, que vale para esse trecho:
+
+    Copyright (c) 2021 Qurit
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the
+    "Software"), to deal in the Software without restriction, including
+    without limitation the rights to use, copy, modify, merge, publish,
+    distribute, sublicense, and/or sell copies of the Software, and to
+    permit persons to whom the Software is furnished to do so, subject to
+    the following conditions:
+
+    The above copyright notice and this permission notice shall be included
+    in all copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+    OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+    MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+    IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+    CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+    TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+    SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
   BIBLIOTECAS QUE O CODIGO DESTE COMPONENTE IMPORTA
@@ -304,9 +376,17 @@ APROVADA (`ApprovalStatus = UNAPPROVED`), com sufixo de procedencia no nome:
   _mse   MOOSE (ENHANCE.PET)
   _lnl   niveis linfonodais cervicais (Weissmann et al., 2023)
 
+  O conjunto completo sai com o rotulo RadAI_FULL, e o entregue, com
+  RadAI_STUDY (RadAI_STUDY_Fast no FAST); os conjuntos de versoes anteriores
+  (STUDY_full, RadAI_OAR, RadAI_OAR_Fast) continuam legiveis. Com as tags
+  proprias da estacao, uma estrutura do entregue pode sair com o nome que a
+  estacao escolheu, sem o sufixo; a descricao dela (ROIDescription) guarda o
+  nome padrao e "sugestao IA nao aprovada", e ela continua UNAPPROVED.
+
   E cada PLUGIN -- uma tarefa opcional do TotalSegmentator que nao alimenta o
-  conjunto completo -- grava o seu arquivo (rotulo STUDY_ e o codigo dele),
-  com o nosso pos-processamento e um sufixo proprio de tres letras:
+  conjunto completo -- grava o seu arquivo (rotulo RadAI_ e o codigo dele,
+  como RadAI_ORB), com o nosso pos-processamento e um sufixo proprio de tres
+  letras:
 
   _orb   orbita: musculos extraoculares, globos e nervos opticos
   _tth   dentes

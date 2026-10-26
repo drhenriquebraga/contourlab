@@ -162,7 +162,7 @@ def teste_o_indice_26_na_cadeia():
             cru = sd.totalsegmentator_cru(_pelve(nome26))
             nomes_cru = _nomes_rs(cru)
             checar(u"%s: nenhuma ROI do indice 26 no FULL, no OAR e no "
-                   u"STUDY_ts" % nome26,
+                   u"RadAI_TS" % nome26,
                    _sem_indice_26(full) and _sem_indice_26(oar)
                    and _sem_indice_26(nomes_cru),
                    str([n for n in full + oar + nomes_cru if "ertebrae" in n]))
@@ -173,7 +173,7 @@ def teste_o_indice_26_na_cadeia():
             checar(u"  e o Bone_Pelvic_ai tambem",
                    "bone_pelvic" in mf and (mf["bone_pelvic"] & l6).sum()
                    >= 0.9 * l6.sum())
-            checar(u"  e o STUDY_ts leva o indice 26 no Sacrum_ts",
+            checar(u"  e o RadAI_TS leva o indice 26 no Sacrum_ts",
                    "Sacrum_ts" in nomes_cru, str(nomes_cru))
             checar(u"  e a descricao do Sacrum_ts diz a fusao",
                    u"indice 26" in _obs(cru).get("Sacrum_ts", u""),
@@ -477,9 +477,12 @@ def _torax(m, z_pulmao=(5, 30)):
 def teste_o_oar_do_pescoco_por_topografia():
     secao(u"C10: o OAR do pescoco, por topografia")
     todas = NA_LISTA_DO_PESCOCO + list(E.FORA_DO_OAR_NO_PESCOCO_SEM_TORAX)
-    checar(u"34 chaves: 32 da lista e os dois grandes vasos sem torax (a "
-           u"carotida saiu da lista: ela vai so ao FULL em toda regiao)",
-           len(NA_LISTA_DO_PESCOCO) == 32 and len(todas) == 34
+    checar(u"36 chaves: 32 da lista e, sem torax, os dois grandes vasos e os "
+           u"dois pulmoes (o Lungs_ai vai no lugar deles; a carotida saiu da "
+           u"lista: ela vai so ao FULL em toda regiao)",
+           len(NA_LISTA_DO_PESCOCO) == 32 and len(todas) == 36
+           and {"lung_left", "lung_right"} <= set(todas)
+           and "lungs" not in todas
            and "carotids" not in todas and "carotids" not in
            RS.PERMITIDOS_NO_OAR, str(len(todas)))
     checar(u"todas estao em PERMITIDOS_NO_OAR (senao a regra e inerte)",
@@ -500,17 +503,19 @@ def teste_o_oar_do_pescoco_por_topografia():
     checar(u"ISCA: sem a mandibula no campo, nao e pescoco (nada da lista sai)",
            not (set(todas) & set(E.fora_do_oar_por_regiao(sem_m, G))))
     fora = E.fora_do_oar_por_regiao(base, G)
-    checar(u"pescoco sem torax: as 34 saem do OAR",
+    checar(u"pescoco sem torax: as 36 saem do OAR",
            set(todas) <= set(fora), str(sorted(set(todas) - set(fora))))
     checar(u"  e os constritores ficam",
            not (set(CONSTRITORES) & set(fora)))
     checar(u"  e o motivo diz a regiao",
            all(u"cabeca_pescoco" in fora[k] for k in todas if k in fora))
     ft = E.fora_do_oar_por_regiao(_torax(base), G)
-    checar(u"pescoco com torax: os grandes vasos ficam, as 32 saem",
-           set(NA_LISTA_DO_PESCOCO) <= set(ft)
-           and not ({"great_arteries", "great_veins"} & set(ft)),
-           str(sorted(set(ft) & {"great_arteries", "great_veins"})))
+    _ficam_com_torax = {"great_arteries", "great_veins", "lung_left",
+                        "lung_right"}
+    checar(u"pescoco com torax: os grandes vasos e os pulmoes ficam, as 32 "
+           u"saem", set(NA_LISTA_DO_PESCOCO) <= set(ft)
+           and not (_ficam_com_torax & set(ft)),
+           str(sorted(set(ft) & _ficam_com_torax)))
     cranio = dict(_grade_de_caixas(todas))
     cranio["brain"] = caixa(0, 29, 20, 110, 20, 110)
     fc = E.fora_do_oar_por_regiao(cranio, G)
@@ -707,6 +712,7 @@ def teste_oculomotor_so_por_ato_declarado():
     io.open(_cfg, "w", encoding="utf-8").write(u"ROOT=\n")
     os.environ["RADAI_CONFIG"] = _cfg
     os.environ["LOCALAPPDATA"] = tempfile.mkdtemp(prefix="radai_t_motor2_")
+    os.environ["RADAI_REGISTRO_DIR"] = tempfile.mkdtemp(prefix="radai_t_motor2_")
     import radai_watcher as W
     velho = dict(W.CFG)
     try:
@@ -1193,6 +1199,44 @@ def teste_a_folga_dos_vizinhos_e_os_orgaos_inteiros():
            and not (novo & perto_il & ~alcas).any())
 
 
+def teste_a_bag_oar_preenche_os_furos_no_fim():
+    secao(u"v8.7: a Bag_Bowel_OAR preenche o furo de cada corte axial no fim, "
+          u"depois das subtracoes")
+    m, _skin = _abdome()
+    veia = caixa(0, 30, 46, 50, 62, 66)
+    m["iliac_vena_left"] = veia
+    m["small_intestine"] = m["small_intestine"] & ~radai_geom.expandir(
+        veia, 8.0, G)
+    cercado = veia.copy()
+    cercado[:10] = False
+    cercado[20:] = False
+
+    def _vez():
+        bag, c = _bag(m)
+        novo, desc, _cob, _conf = RC.acabamento_da_bag_oar(bag, dict(m), G)
+        return bag, c, np.asarray(novo, bool), desc
+    bag, c, novo, desc = _vez()
+    checar(u"(fantoma) sem o preenchimento, o vaso com a folga seria um furo "
+           u"no meio das alcas", bool((cercado & ~_alcas_de(m)).any()))
+    checar(u"o acabamento preenche o furo: o vaso cercado de alca entra",
+           not (cercado & ~novo).any(),
+           u"%d voxels fora" % int((cercado & ~novo).sum()))
+    checar(u"  a primeira passada tambem", bag is not None
+           and not (cercado & ~bag).any())
+    checar(u"  e a descricao diz a regra e quanto entrou",
+           u"furos cheios no fim" in desc
+           and (u"; furos +" in desc or u"Nesta serie: furos +" in desc),
+           desc[-200:])
+    velho = RC.preencher_cortes_axiais
+    RC.preencher_cortes_axiais = lambda mm, gg: np.asarray(mm, bool).copy()
+    try:
+        _b, _c, ni, _d = _vez()
+    finally:
+        RC.preencher_cortes_axiais = velho
+    checar(u"ISCA: sem preencher, o vaso fica de fora (a checagem de cima "
+           u"reprovaria)", bool((cercado & ~ni).any()))
+
+
 def teste_a_veia_porta_fora_de_toda_conta():
     secao(u"v8.5: a veia porta nao entra em conta nenhuma da Bag_Bowel_OAR")
     m, _skin = _abdome()
@@ -1210,13 +1254,24 @@ def teste_a_veia_porta_fora_de_toda_conta():
                        for n in RC.vizinhos_com_margem_da_bag())
            and "great_veins" not in RC.vasos_da_bag_oar())
     velho = RC.vasos_da_bag_oar
+    velho_f = RC.preencher_cortes_axiais
+    RC.preencher_cortes_axiais = lambda mm, gg: np.asarray(mm, bool).copy()
+    try:
+        bs, _c = _bag(m)
+    finally:
+        RC.preencher_cortes_axiais = velho_f
+    checar(u"  e fica sem depender do preenchimento do fim",
+           bs is not None and not (porta & ~bs).any())
     RC.vasos_da_bag_oar = lambda: velho() + ("portal_vein_and_splenic_vein",
                                              "great_veins")
+    RC.preencher_cortes_axiais = lambda mm, gg: np.asarray(mm, bool).copy()
     try:
         bi, _c = _bag(m)
     finally:
         RC.vasos_da_bag_oar = velho
-    checar(u"ISCA: com a porta entre as exclusoes (como era), a bag fura",
+        RC.preencher_cortes_axiais = velho_f
+    checar(u"ISCA: com a porta entre as exclusoes (como era) e sem o "
+           u"preenchimento do fim, a bag fura",
            bi is not None and bool((porta & ~bi).any()))
     spec = E.CONSTRUCOES_POR_SAIDA()["bag_bowel_oar"]
     checar(u"o recorte da segunda passada nao cita a porta nem o composto "
@@ -2152,6 +2207,7 @@ def main():
               teste_a_bag_bowel_ai_declara_a_prostata,
               teste_a_receita_da_bag_bowel_oar,
               teste_a_folga_dos_vizinhos_e_os_orgaos_inteiros,
+              teste_a_bag_oar_preenche_os_furos_no_fim,
               teste_a_veia_porta_fora_de_toda_conta,
               teste_o_corte_caudal_pela_sacroiliaca,
               teste_a_bag_oar_sem_reto_separado,

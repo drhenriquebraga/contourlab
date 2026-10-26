@@ -347,6 +347,27 @@ def teste_tps_nao_escolhido_avisa_a_cada_gravacao():
            and u"Num Monaco" not in engine.AVISO_DO_TPS_NAO_ESCOLHIDO,
            engine.AVISO_DO_TPS_NAO_ESCOLHIDO)
 
+    import radai_config_estacao
+
+    def _aponta_a_configuracao(aviso):
+        rotulo = u"Ajuste de contornos em anel"
+        return (u"Configuracoes > Geral (%s)" % rotulo in aviso
+                and u"primeiro uso" not in aviso
+                and u"%s, o padrao" % rot_e in aviso
+                and u"data-radai-frase>%s<" % rotulo
+                in radai_config_estacao.GERAL)
+    checar("o aviso manda ajustar o anel em Configuracoes > Geral, onde ele "
+           "mora desde que o primeiro uso deixou de perguntar o TPS",
+           _aponta_a_configuracao(engine.AVISO_DO_TPS_NAO_ESCOLHIDO),
+           engine.AVISO_DO_TPS_NAO_ESCOLHIDO)
+    antigo = (u"ALERTA: TPS de destino nao escolhido (TPS_DESTINO vazio): o "
+              u"RTSTRUCT foi gravado como %s, com o furo do anel num segundo "
+              u"contorno. Num TPS que precisa da linha divisoria nos aneis "
+              u"(%s), a Skin e a ChestWall chegariam preenchidas. Escolha o "
+              u"TPS no primeiro uso do painel." % (rot_e, rot_m))
+    checar("  ISCA: o aviso que mandava escolher no primeiro uso reprova",
+           not _aponta_a_configuracao(antigo))
+
     def _diz_o_tps(linhas, valor):
         rot = radai_config.rotulo_do_tps(valor)
         return (any(l.startswith(u"TPS de destino %s:" % rot)
@@ -1180,6 +1201,304 @@ def teste_a_identidade_sai_no_repertorio_da_tc():
            "%s %r" % (rep_i, nome_i[:20]))
 
 
+LADO_P = 40
+PIXEL_P = 0.9765625
+CORTE_P = 2.5
+CORTES_P = 12
+ORIGEM_P = (-163.37, -201.13, -57.4)
+DESVIO_MAXIMO_DO_PLANO_MM = 0.001
+
+
+def _giro(eixo, graus):
+    a = np.radians(graus)
+    c, s = np.cos(a), np.sin(a)
+    if eixo == "x":
+        return np.array([[1, 0, 0], [0, c, -s], [0, s, c]])
+    if eixo == "y":
+        return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
+    return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
+
+
+def _iop(linha, coluna):
+    return tuple(float("%.6f" % v) for v in list(linha) + list(coluna))
+
+
+def _orientacoes():
+    obl = _giro("x", 7).dot(_giro("y", -5))
+    sag = _giro("z", 12).dot(_giro("y", 8))
+    return [("axial", (1, 0, 0, 0, 1, 0)),
+            ("axial obliqua", _iop(obl[:, 0], obl[:, 1])),
+            ("sagital", (0, 1, 0, 0, 0, -1)),
+            ("coronal", (1, 0, 0, 0, 0, -1)),
+            ("sagital obliqua", _iop(sag.dot([0, 1, 0]), sag.dot([0, 0, -1])))]
+
+
+def _serie_no_plano(pasta, iop, modalidade="MR", n=CORTES_P):
+    os.makedirs(pasta, exist_ok=True)
+    linha = np.asarray(iop[:3], dtype=np.float64)
+    coluna = np.asarray(iop[3:], dtype=np.float64)
+    normal = np.cross(linha, coluna)
+    normal /= np.linalg.norm(normal)
+    estudo, serie, quadro = generate_uid(), generate_uid(), generate_uid()
+    yy, xx = np.mgrid[0:LADO_P, 0:LADO_P]
+    for k in range(n):
+        ds = Dataset()
+        ds.SOPClassUID = ("1.2.840.10008.5.1.4.1.1.4" if modalidade == "MR"
+                          else "1.2.840.10008.5.1.4.1.1.2")
+        ds.SOPInstanceUID = generate_uid()
+        ds.StudyDate = ds.SeriesDate = "20261025"
+        ds.StudyTime = ds.SeriesTime = "120000"
+        ds.Modality = modalidade
+        ds.PatientName = "FANTOMA^PLANO"
+        ds.PatientID = "FANTOMA_PLANO"
+        ds.StudyInstanceUID = estudo
+        ds.SeriesInstanceUID = serie
+        ds.FrameOfReferenceUID = quadro
+        ds.StudyID = "1"
+        ds.SeriesNumber = 3
+        ds.InstanceNumber = k + 1
+        ipp = np.asarray(ORIGEM_P) + k * CORTE_P * normal
+        ds.ImagePositionPatient = ["%.6f" % v for v in ipp]
+        ds.ImageOrientationPatient = ["%.6f" % v for v in iop]
+        ds.PatientPosition = "HFS"
+        ds.SliceThickness = CORTE_P
+        ds.PixelSpacing = [PIXEL_P, PIXEL_P]
+        ds.Rows = ds.Columns = LADO_P
+        ds.SamplesPerPixel = 1
+        ds.PhotometricInterpretation = "MONOCHROME2"
+        ds.BitsAllocated = ds.BitsStored = 16
+        ds.HighBit = 15
+        ds.PixelRepresentation = 1
+        ds.RescaleIntercept = 0
+        ds.RescaleSlope = 1
+        img = (200 + 30 * k + 3 * yy + xx).astype(np.int16)
+        ds.PixelData = img.tobytes()
+        caminho = os.path.join(pasta, "IM_%03d.dcm" % k)
+        ds.file_meta = pydicom.dataset.FileMetaDataset()
+        ds.file_meta.MediaStorageSOPClassUID = ds.SOPClassUID
+        ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
+        ds.file_meta.TransferSyntaxUID = pydicom.uid.ExplicitVRLittleEndian
+        pydicom.dcmwrite(caminho, ds, enforce_file_format=True)
+    return serie
+
+
+def _alvos_no_plano(n=CORTES_P):
+    zz, yy, xx = np.ogrid[0:n, 0:LADO_P, 0:LADO_P]
+    r = np.hypot(yy - 19.3, xx - 21.6)
+    faixa = (zz >= 2) & (zz <= n - 3)
+    anel = (r <= 13.0) & (r >= 6.0) & faixa
+    ilha = (r <= 2.5) & faixa
+    fino = np.zeros((n, LADO_P, LADO_P), dtype=bool)
+    fino[3, 4, 5] = True
+    fino[4, 36, 8:20] = True
+    fino[5:9, 33:38, 30:33] = True
+    return {"liver": np.ascontiguousarray(anel | ilha), "spleen": fino}
+
+
+_CENARIOS_DO_PLANO = {}
+
+
+def _rtstruct_no_plano(rotulo, iop, tps, sem_o_plano=False, suavizar_mm=1.0):
+    chave = (rotulo, tps, sem_o_plano, suavizar_mm)
+    if chave in _CENARIOS_DO_PLANO:
+        return _CENARIOS_DO_PLANO[chave]
+    pasta = os.path.join(temp(), "PLANO", "MR")
+    uid = _serie_no_plano(pasta, iop)
+    stage = temp()
+    engine.copy_sorted([os.path.join(pasta, f) for f in sorted(os.listdir(pasta))],
+                       stage)
+    alvos = _alvos_no_plano()
+    linhas = []
+    guardado = getattr(engine, "plano_da_serie", None)
+    try:
+        if sem_o_plano:
+            engine.plano_da_serie = lambda *a, **k: None
+        with _Ambiente(RADAI_TPS_DESTINO=tps):
+            rs, mapa = engine.build_rtstruct(
+                stage, alvos, versao_worker="teste", descontar=False,
+                suavizar_mm=suavizar_mm, log=linhas.append)
+    finally:
+        if sem_o_plano:
+            engine.plano_da_serie = guardado
+    destino = os.path.join(temp(), "RS_PLANO.dcm")
+    shutil.copy2(rs, destino)
+    acabamento = sorted(l for l in linhas
+                        if u"acabamento dos contornos" in u"%s" % l)
+    _CENARIOS_DO_PLANO[chave] = {"pasta": pasta, "uid": uid, "rs": destino,
+                                 "mapa": mapa, "alvos": alvos,
+                                 "acabamento": acabamento}
+    return _CENARIOS_DO_PLANO[chave]
+
+
+def _geometria_dos_cortes(pasta):
+    cortes = {}
+    for f in sorted(os.listdir(pasta)):
+        ds = pydicom.dcmread(os.path.join(pasta, f), stop_before_pixels=True)
+        iop = np.asarray([float(v) for v in ds.ImageOrientationPatient])
+        linha = iop[:3] / np.linalg.norm(iop[:3])
+        coluna = iop[3:] - iop[3:].dot(linha) * linha
+        coluna /= np.linalg.norm(coluna)
+        cortes[str(ds.SOPInstanceUID)] = (
+            np.asarray([float(v) for v in ds.ImagePositionPatient]),
+            linha, coluna, np.cross(linha, coluna), int(ds.InstanceNumber) - 1)
+    return cortes
+
+
+def _contornos_no_corte(rs, pasta):
+    cortes = _geometria_dos_cortes(pasta)
+    ds = pydicom.dcmread(rs)
+    nomes = dict((int(s.ROINumber), str(s.ROIName))
+                 for s in ds.StructureSetROISequence)
+    saida, desvio, pontos, fora = {}, 0.0, 0, 0
+    for rc in ds.ROIContourSequence:
+        nome = nomes.get(int(rc.ReferencedROINumber))
+        for c in rc.ContourSequence:
+            p = np.asarray([float(v) for v in c.ContourData]).reshape(-1, 3)
+            ref = str(c.ContourImageSequence[0].ReferencedSOPInstanceUID)
+            ipp, linha, coluna, normal, k = cortes[ref]
+            d = np.abs((p - ipp).dot(normal))
+            desvio = max(desvio, float(d.max()))
+            pontos += len(p)
+            fora += int(np.count_nonzero(d > DESVIO_MAXIMO_DO_PLANO_MM))
+            local = np.column_stack([(p - ipp).dot(linha), (p - ipp).dot(coluna)])
+            saida.setdefault((nome, k), []).append(local)
+    return saida, desvio, pontos, fora
+
+
+def _impressao_dos_contornos(rs):
+    from pydicom.tag import Tag
+    ds = pydicom.dcmread(rs)
+    por_roi = []
+    for rc in ds.ROIContourSequence:
+        h = hashlib.sha256()
+        for c in rc.ContourSequence:
+            el = c.get_item(Tag(0x3006, 0x0050))
+            v = el.value
+            h.update(bytes(v) if isinstance(v, (bytes, bytearray))
+                     else "\\".join(str(x) for x in v).encode("ascii"))
+            h.update(b"|")
+        por_roi.append(h.hexdigest())
+    return hashlib.sha256("".join(sorted(por_roi)).encode("ascii")).hexdigest()[:16]
+
+
+IMPRESSAO_DO_AXIAL_DE_HOJE = {"eclipse": "3a6986f4b224bb8c",
+                              "monaco": "0e9ae9f867193668"}
+
+
+def teste_o_acabamento_axial_e_o_de_hoje():
+    for tps in ("eclipse", "monaco"):
+        c = _rtstruct_no_plano("axial", (1, 0, 0, 0, 1, 0), tps)
+        obtida = _impressao_dos_contornos(c["rs"])
+        checar("%s: o RTSTRUCT da serie axial e byte a byte o de antes do "
+               "acabamento no plano da imagem" % tps,
+               obtida == IMPRESSAO_DO_AXIAL_DE_HOJE[tps], obtida)
+    for iop in ((1, 0, 0, 0, 1, 0), (-1, 0, 0, 0, -1, 0), (-1, 0, 0, 0, 1, 0),
+                (1, 0, 0, 0, -1, 0), (0.98, 0.198997, 0, -0.198997, 0.98, 0)):
+        pasta = os.path.join(temp(), "AXIAL")
+        _serie_no_plano(pasta, iop, n=3)
+        checar("a serie axial %s fica no caminho de hoje (sem giro)" % (iop,),
+               getattr(engine, "plano_da_serie", lambda *a: "ausente")(pasta)
+               is None)
+
+
+def teste_os_contornos_ficam_no_plano_da_serie():
+    eixo = {}
+    for rotulo, iop in _orientacoes():
+        for tps in ("eclipse", "monaco"):
+            c = _rtstruct_no_plano(rotulo, iop, tps)
+            por_corte, desvio, pontos, fora = _contornos_no_corte(c["rs"],
+                                                                  c["pasta"])
+            checar("%s, %s: todo ponto no plano do corte que ele referencia "
+                   "(%d pontos)" % (rotulo, tps, pontos),
+                   fora == 0 and pontos > 0, "fora %d, desvio %.4f mm"
+                   % (fora, desvio))
+            if rotulo == "axial":
+                eixo[tps] = (por_corte, c["acabamento"])
+                continue
+            ref, acab = eixo[tps]
+            checar("%s, %s: os mesmos contornos em cada corte que a axial" % (
+                rotulo, tps),
+                dict((k, len(v)) for k, v in por_corte.items())
+                == dict((k, len(v)) for k, v in ref.items()),
+                str(sorted((k, len(v)) for k, v in por_corte.items())[:6]))
+            checar("%s, %s: o mesmo laudo do acabamento que a axial (nenhum "
+                   "contorno virou degenerado nem cruzado por estar fora do "
+                   "eixo)" % (rotulo, tps), c["acabamento"] == acab,
+                   "%r / %r" % (c["acabamento"], acab))
+
+
+def teste_o_desenho_e_o_mesmo_em_toda_orientacao():
+    from scipy.spatial import cKDTree
+    ref, _d, _p, _f = _contornos_no_corte(
+        *[_rtstruct_no_plano("axial", (1, 0, 0, 0, 1, 0), "eclipse")[k]
+          for k in ("rs", "pasta")])
+    for rotulo, iop in _orientacoes()[1:]:
+        c = _rtstruct_no_plano(rotulo, iop, "eclipse")
+        por_corte, _d, _p, _f = _contornos_no_corte(c["rs"], c["pasta"])
+        pior = 0.0
+        for k, contornos in ref.items():
+            a = np.concatenate(contornos)
+            b = np.concatenate(por_corte.get(k) or [np.zeros((1, 2)) + 1e9])
+            pior = max(pior, float(cKDTree(a).query(b)[0].max()),
+                       float(cKDTree(b).query(a)[0].max()))
+        checar("%s: no plano da imagem, o desenho e o da axial (o pior ponto "
+               "a %.4f mm)" % (rotulo, pior), pior <= 0.005)
+
+
+def teste_a_volta_fecha_em_toda_orientacao():
+    import radai_rt
+    axial = {}
+    for rotulo, iop in _orientacoes():
+        for tps in ("eclipse", "monaco"):
+            for suave in (0.0, 1.0):
+                c = _rtstruct_no_plano(rotulo, iop, tps, suavizar_mm=suave)
+                sessao = radai_rt.abrir(c["pasta"], c["rs"], c["uid"])
+                try:
+                    volta = sessao.mascara(c["mapa"]["liver"])
+                    m = radai_rt.medir_ciclo(c["alvos"]["liver"], volta,
+                                             sessao.grade)
+                finally:
+                    sessao.fechar()
+                if not suave:
+                    checar("%s, %s: sem Taubin, a volta fecha (DSC 1,0, sem "
+                           "trocar corte)" % (rotulo, tps),
+                           m["dsc"] >= 0.9999 and m["desloc_z_voxels"] == 0.0,
+                           "%s %s" % (m["dsc"], m["desloc_z_voxels"]))
+                    continue
+                if rotulo == "axial":
+                    axial[tps] = volta
+                    continue
+                checar("%s, %s: com Taubin, a volta e a da axial voxel a voxel"
+                       % (rotulo, tps), np.array_equal(volta, axial[tps]),
+                       "%d / %d voxels" % (int(volta.sum()),
+                                           int(axial[tps].sum())))
+
+
+def teste_isca_o_acabamento_so_em_xy_sai_do_plano():
+    for rotulo, iop in _orientacoes()[1:]:
+        c = _rtstruct_no_plano(rotulo, iop, "eclipse", sem_o_plano=True)
+        _pc, desvio, pontos, fora = _contornos_no_corte(c["rs"], c["pasta"])
+        checar("ISCA: %s com o acabamento so em (x, y), como antes, tira "
+               "pontos do plano (%d de %d, ate %.2f mm)" % (rotulo, fora,
+                                                            pontos, desvio),
+               fora > 0 and desvio > 0.1)
+    c = _rtstruct_no_plano("sagital", (0, 1, 0, 0, 0, -1), "eclipse")
+    cortes = _geometria_dos_cortes(c["pasta"])
+    zs = sorted((float(ipp[2]), k) for ipp, _l, _c, _n, k in cortes.values())
+    errados = total = 0
+    for rc in pydicom.dcmread(c["rs"]).ROIContourSequence:
+        for ct in rc.ContourSequence:
+            p0 = [float(v) for v in ct.ContourData[:3]]
+            certo = cortes[str(ct.ContourImageSequence[0]
+                               .ReferencedSOPInstanceUID)][4]
+            pelo_z = min(zs, key=lambda zk: abs(zk[0] - p0[2]))[1]
+            total += 1
+            errados += int(pelo_z != certo)
+    checar("ISCA: na sagital, o corte escolhido pela posicao z do paciente (o "
+           "radai_rt de antes) erra %d de %d contornos" % (errados, total),
+           total and errados > total // 2)
+
+
 TESTES = [teste_copia_local_vira_parte_10,
           teste_copia_local_preserva_quem_ja_tem_preambulo,
           teste_ordem_da_serie_sem_preambulo,
@@ -1203,7 +1522,12 @@ TESTES = [teste_copia_local_vira_parte_10,
           teste_monaco_a_identidade_fica_como_a_da_imagem,
           teste_temporario_fora_de_disco_externo,
           teste_a_temporaria_e_uma_por_processo,
-          teste_a_identidade_sai_no_repertorio_da_tc]
+          teste_a_identidade_sai_no_repertorio_da_tc,
+          teste_o_acabamento_axial_e_o_de_hoje,
+          teste_os_contornos_ficam_no_plano_da_serie,
+          teste_o_desenho_e_o_mesmo_em_toda_orientacao,
+          teste_a_volta_fecha_em_toda_orientacao,
+          teste_isca_o_acabamento_so_em_xy_sai_do_plano]
 
 
 def main():

@@ -438,6 +438,14 @@ def teste_o_mapa_e_o_dos_autores():
         HN.VERSAO_DOS_PESOS["fold0_bytes"] = 999
         checar(u"  e o tamanho do fold 0 diferente nao fixa",
                not HN.fixado(oficina)[0])
+        HN.VERSAO_DOS_PESOS.update({"fold0_bytes": 5000,
+                                    "fold0_bytes_enxuto": 1234})
+        checar(u"o fold 0 sem o estado do otimizador (o tamanho enxuto "
+               u"registrado) fixa", HN.fixado(oficina)[0],
+               HN.fixado(oficina)[1])
+        HN.VERSAO_DOS_PESOS["fold0_bytes_enxuto"] = 999
+        checar(u"  ISCA: tamanho que nao e nem o original nem o enxuto nao "
+               u"fixa", not HN.fixado(oficina)[0])
         with io.open(os.path.join(oficina, "plans.pkl"), "wb") as f:
             pickle.dump({"all_classes": list(range(1, 22))}, f)
         HN.VERSAO_DOS_PESOS.update({"plans_sha256": hashlib.sha256(io.open(
@@ -453,6 +461,16 @@ def teste_o_mapa_e_o_dos_autores():
            HN.VERSAO_DOS_PESOS["release"] == "nnUnet_model_export"
            and HN.VERSAO_DOS_PESOS["plans_sha256"].startswith("9e5a6de4")
            and HN.VERSAO_DOS_PESOS["fold0_bytes"] == 246413947)
+    import radai_models as RM
+    reg = RM.MODELOS["hnlnl"]
+    fold0 = ("3d_fullres/Task110_HNLNFixed_MirrorBest/"
+             "nnUNetTrainerV2__nnUNetPlansv2.1/fold_0/"
+             "model_final_checkpoint.model")
+    checar(u"o tamanho do fold 0 e o do registro, nas duas formas (original "
+           u"e sem o estado do otimizador)",
+           dict(reg["conteudo"]).get(fold0) == HN.VERSAO_DOS_PESOS["fold0_bytes"]
+           and (reg.get("enxuto") or {}).get(fold0, (None,))[0]
+           == HN.VERSAO_DOS_PESOS.get("fold0_bytes_enxuto"))
     import radai_hnlnl_engine as HM
     base = HM.pasta_dos_pesos()
     if base:

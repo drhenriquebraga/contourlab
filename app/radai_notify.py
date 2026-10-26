@@ -4,6 +4,8 @@ import os
 import subprocess
 import threading
 
+import radai_sets
+
 PRAZO_S = 30
 
 AUMID = (u"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}"
@@ -30,8 +32,8 @@ FRASES = {
                  u"séries com ela ficam em espera até «Liberar».",
 }
 
-ROTULOS_DOS_GRAVADOS = {"oar": u"RadAI_OAR", "full": u"FULL",
-                        "fast": u"RadAI_OAR_Fast"}
+ROTULOS_DOS_GRAVADOS = {"oar": radai_sets.ROTULO_STUDY, "full": u"FULL",
+                        "fast": radai_sets.ROTULO_STUDY_FAST}
 
 _DESLIGADA = ("0", "off", "nao", "false", "no")
 _ARMADA = [False]

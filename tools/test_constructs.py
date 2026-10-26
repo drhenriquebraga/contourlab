@@ -1042,6 +1042,336 @@ def teste_o_heart_ai_da_v85():
            not (dentro & ~novo2).any() and not (acima & novo2).any())
 
 
+_FORMA_CP = (60, 80, 100)
+
+
+def _cx(z0, z1, y0, y1, x0, x1, forma=_FORMA_CP):
+    a = np.zeros(forma, bool)
+    a[z0:z1, y0:y1, x0:x1] = True
+    return a
+
+
+def _laringe_do_fantoma():
+    hioide = _cx(40, 43, 20, 30, 40, 60)
+    tireoide = _cx(25, 42, 22, 34, 38, 62) & ~_cx(25, 42, 24, 34, 40, 60)
+    cricoide = _cx(18, 26, 24, 36, 42, 58) & ~_cx(18, 26, 26, 34, 44, 56)
+    ar = _cx(14, 40, 26, 32, 46, 54)
+    hipofaringe = _cx(28, 44, 36, 42, 42, 58)
+    return {"hyoid": hioide, "thyroid_cartilage": tireoide,
+            "cricoid_cartilage": cricoide, "larynx_air": ar,
+            "hypopharynx": hipofaringe}
+
+
+def teste_a_laringe():
+    secao(u"v8.7: Larynx_ai, do corte logo abaixo do hioide ao ultimo corte "
+          u"da cricoide, somada e conectada")
+    g = G.Grade((1.0, 1.0, 1.0))
+    m = _laringe_do_fantoma()
+    linhas = []
+    c = C.laringe(dict(m), g, log=linhas.append)
+    lar = np.asarray(c.mascara, bool) if c else None
+    checar(u"a laringe sai", lar is not None and lar.any())
+    if lar is None or not lar.any():
+        return
+    z = np.flatnonzero(lar.any(axis=(1, 2)))
+    checar(u"o limite superior e o corte logo abaixo da borda inferior do "
+           u"hioide (39)", int(z.max()) == 39, str((z.min(), z.max())))
+    checar(u"  e o inferior, o ultimo corte com a cricoide (18): o ar abaixo "
+           u"dele fica fora", int(z.min()) == 18 and not lar[:18].any())
+    soma = (m["cricoid_cartilage"] | m["thyroid_cartilage"]
+            | m["larynx_air"] | m["hypopharynx"])
+    soma[:18] = False
+    soma[40:] = False
+    checar(u"  e leva as quatro partes inteiras dentro da faixa",
+           not (soma & ~lar).any(), u"%d voxels" % int((soma & ~lar).sum()))
+    checar(u"conectada: um volume (o fechamento une a hipofaringe a "
+           u"cartilagem)", ndimage.label(lar)[1] == 1,
+           str(ndimage.label(lar)[1]))
+    checar(u"  e o espaco dentro do anel da cricoide entra (furo de cada "
+           u"corte)", bool(lar[20, 33, 50]) and not soma[20, 33, 50])
+    checar(u"o nome e Larynx_ai (<=16)", M.nome_clinico(C.CHAVE_LARINGE)
+           == u"Larynx_ai", M.nome_clinico(C.CHAVE_LARINGE))
+    checar(u"  e a descricao diz os marcos", u"hioide" in c.descricao
+           and u"cricoide" in c.descricao, c.descricao[:160])
+    velho = C.FECHAMENTO_DA_LARINGE_MM
+    C.FECHAMENTO_DA_LARINGE_MM = 0.0
+    try:
+        ci = C.laringe(dict(m), g)
+    finally:
+        C.FECHAMENTO_DA_LARINGE_MM = velho
+    checar(u"ISCA: sem conectar, a laringe sai em dois pedacos (a checagem "
+           u"de um volume reprovaria)",
+           ci and ndimage.label(np.asarray(ci.mascara, bool))[1] >= 2)
+    sem = dict(m)
+    del sem["hyoid"]
+    cs = C.laringe(sem, g)
+    checar(u"sem o hioide nao ha limite superior: nao sai, e diz por que",
+           not cs and any(u"hioide" in f for f in (cs.faltou if cs is not None
+                                                     else [])),
+           str(cs.faltou if cs is not None else None))
+
+
+def _mandibula_com_ramos(coronoide_alto=False):
+    mand = np.zeros(_FORMA_CP, bool)
+    for x0, x1 in ((70, 76), (24, 30)):
+        mand[10:20, 10:40, x0:x1] = True
+        mand[20:44, 30:46, x0:x1] = True
+        mand[44:52, 30:35, x0:x1] = True
+        mand[44:56, 40:46, x0:x1] = True
+    mand[10:20, 10:16, 24:76] = True
+    return mand
+
+
+def teste_as_atms():
+    secao(u"v8.7: TMJ_L_ai e TMJ_R_ai, o condilo do corte em que o ramo se "
+          u"divide ao topo, com 1 mm em 3D")
+    g = G.Grade((1.0, 1.0, 1.0))
+    mand = _mandibula_com_ramos()
+    linhas = []
+    cs = C.atms({"mandible": mand}, g, log=linhas.append)
+    for chave, x0, x1 in (("tmj_left", 70, 76), ("tmj_right", 24, 30)):
+        c = cs.get(chave)
+        atm = np.asarray(c.mascara, bool) if c else None
+        checar(u"[%s] sai" % chave, atm is not None and atm.any())
+        if atm is None or not atm.any():
+            continue
+        cond = _cx(44, 56, 40, 46, x0, x1)
+        coro = _cx(44, 52, 30, 35, x0, x1)
+        checar(u"[%s] leva o condilo inteiro, do corte da divisao (44) ao "
+               u"topo (55)" % chave, not (cond & ~atm).any())
+        checar(u"[%s]   e nada do coronoide" % chave,
+               not (atm & coro).any(), u"%d voxels" % int((atm & coro).sum()))
+        esperado = G.expandir(cond, 1.0, g)
+        checar(u"[%s]   com 1 mm de margem em 3D (nem mais, nem menos)"
+               % chave, np.array_equal(atm, esperado),
+               u"%d de diferenca" % int((atm ^ esperado).sum()))
+        checar(u"[%s]   e so do proprio lado" % chave,
+               not atm[:, :, :50].any() if chave == "tmj_left"
+               else not atm[:, :, 50:].any())
+        checar(u"[%s] o nome tem ate 16 caracteres (%s)"
+               % (chave, M.nome_clinico(chave)),
+               M.nome_clinico(chave) in (u"TMJ_L_ai", u"TMJ_R_ai"))
+    velho = C._mais_posterior
+    C._mais_posterior = lambda comps: min(
+        comps, key=lambda cc: float(np.nonzero(cc)[0].mean()))
+    try:
+        ci = C.atms({"mandible": mand}, g).get("tmj_left")
+    finally:
+        C._mais_posterior = velho
+    checar(u"ISCA: escolhendo o contorno da frente, o coronoide entraria (a "
+           u"checagem de cima reprovaria)",
+           ci and bool((np.asarray(ci.mascara, bool)
+                        & _cx(44, 52, 30, 35, 70, 76)).any()))
+    sem_divisao = np.zeros(_FORMA_CP, bool)
+    sem_divisao[10:56, 30:46, 70:76] = True
+    sem_divisao[10:56, 30:46, 24:30] = True
+    cn = C.atms({"mandible": sem_divisao}, g).get("tmj_left")
+    checar(u"sem o ramo dividido em dois contornos, nao sai, e diz por que",
+           not cn and any(u"divide" in f for f in cn.faltou), str(cn.faltou))
+
+
+_CRANIO_DA_ATM = (56, 60, 20, 66, 18, 80)
+_GIRO_DA_CABECA = -20.0
+
+
+def _girada(m, graus=_GIRO_DA_CABECA):
+    return ndimage.rotate(np.asarray(m, np.uint8), graus, axes=(1, 2),
+                          reshape=False, order=0).astype(bool)
+
+
+def _atms_pela_caixa(masks, g):
+    velho = getattr(C, "ANCORAS_DO_PLANO_MEDIO_DA_ATM", ())
+    C.ANCORAS_DO_PLANO_MEDIO_DA_ATM = ()
+    try:
+        return C.atms(masks, g)
+    finally:
+        C.ANCORAS_DO_PLANO_MEDIO_DA_ATM = velho
+
+
+def _da(cs, chave):
+    c = cs.get(chave)
+    return np.asarray(c.mascara, bool) if c else None
+
+
+def _resto_da_mandibulectomia():
+    resto = _mandibula_com_ramos()
+    resto[:, :, :70] = False
+    return resto
+
+
+def teste_o_plano_medio_da_atm():
+    secao(u"v8.7: o plano medio da ATM pelo centro de uma estrutura mediana "
+          u"(cranio, encefalo, C1, C2); o centro da caixa da mandibula so "
+          u"como recuo")
+    g = G.Grade((1.0, 1.0, 1.0))
+    mand = _mandibula_com_ramos()
+    cranio = _cx(*_CRANIO_DA_ATM)
+    cond_e, cond_d = _cx(44, 56, 40, 46, 70, 76), _cx(44, 56, 40, 46, 24, 30)
+
+    linhas = []
+    novo = C.atms({"mandible": mand, "skull": cranio}, g, log=linhas.append)
+    velho = _atms_pela_caixa({"mandible": mand, "skull": cranio}, g)
+    for chave in ("tmj_left", "tmj_right"):
+        a, b = _da(novo, chave), _da(velho, chave)
+        checar(u"[%s] mandibula inteira, cabeca reta: o mesmo, voxel a voxel, "
+               u"que pelo centro da caixa (o centro do cranio fica a 1 voxel "
+               u"dele)" % chave,
+               a is not None and b is not None and np.array_equal(a, b))
+    checar(u"o log diz que o plano medio passou pelo centro do cranio",
+           any(l.startswith(u"TMJ:") and u"(skull)" in l for l in linhas),
+           str(linhas[:2]))
+
+    resto = _resto_da_mandibulectomia()
+    linhas = []
+    cs = C.atms({"mandible": resto, "skull": cranio}, g, log=linhas.append)
+    tl, tr = _da(cs, "tmj_left"), _da(cs, "tmj_right")
+    checar(u"mandibulectomia (sobra o ramo esquerdo): a TMJ_L e o condilo "
+           u"esquerdo inteiro com 1 mm, como na mandibula inteira",
+           tl is not None and np.array_equal(tl, G.expandir(cond_e, 1.0, g)))
+    checar(u"  e a TMJ_R nao sai, e diz que nao ha mandibula do lado direito",
+           tr is None and any(u"TMJ_R" in f and u"sem mandibula" in f
+                              for f in cs["tmj_right"].faltou),
+           str(cs["tmj_right"].faltou))
+    tri = _da(_atms_pela_caixa({"mandible": resto, "skull": cranio}, g),
+              "tmj_right")
+    checar(u"ISCA: pelo centro da caixa (a regra antiga) a TMJ_R sairia no "
+           u"condilo ESQUERDO (a checagem de cima reprovaria)",
+           tri is not None and bool((tri & cond_e).any())
+           and not tri[:, :, :50].any())
+
+    mand_g, cranio_g = _girada(mand), _girada(cranio)
+    novo = C.atms({"mandible": mand_g, "skull": cranio_g}, g)
+    velho = _atms_pela_caixa({"mandible": mand_g, "skull": cranio_g}, g)
+    for chave, cond in (("tmj_left", cond_e), ("tmj_right", cond_d)):
+        a, b = _da(novo, chave), _da(velho, chave)
+        checar(u"[%s] cabeca girada %g graus, mandibula inteira: o condilo "
+               u"girado do proprio lado com 1 mm, e o mesmo que pela caixa"
+               % (chave, _GIRO_DA_CABECA),
+               a is not None and b is not None and np.array_equal(a, b)
+               and np.array_equal(a, G.expandir(_girada(cond), 1.0, g)))
+
+    resto_g = _girada(resto)
+    cs = C.atms({"mandible": resto_g, "skull": cranio_g}, g)
+    tl, tr = _da(cs, "tmj_left"), _da(cs, "tmj_right")
+    checar(u"cabeca girada e mandibulectomia: a TMJ_L e o condilo esquerdo "
+           u"girado com 1 mm, e a TMJ_R nao sai",
+           tl is not None and tr is None
+           and np.array_equal(tl, G.expandir(_girada(cond_e), 1.0, g)))
+    ci = _atms_pela_caixa({"mandible": resto_g, "skull": cranio_g}, g)
+    tli, tri = _da(ci, "tmj_left"), _da(ci, "tmj_right")
+    checar(u"ISCA: pela caixa, o condilo esquerdo inteiro sairia como TMJ_R, "
+           u"e a TMJ_L nem sairia (a checagem de cima reprovaria)",
+           tli is None and tri is not None
+           and not (_girada(cond_e) & ~tri).any())
+
+    plano = getattr(C, "plano_medio_da_atm", None)
+    checar(u"o plano medio e uma funcao so (radai_constructs.plano_medio_da_"
+           u"atm)", callable(plano))
+    if not callable(plano):
+        return
+    ancoras = {"skull": cranio, "brain": _cx(56, 60, 25, 60, 21, 80),
+               "vertebrae_C1": _cx(30, 40, 50, 60, 42, 60),
+               "vertebrae_C2": _cx(20, 30, 50, 60, 43, 62)}
+    esperado = (("skull", 48.5), ("brain", 50.0), ("vertebrae_C1", 50.5),
+                ("vertebrae_C2", 52.0))
+    m = {"mandible": mand}
+    m.update(ancoras)
+    for nome, x in esperado:
+        r = plano(m, mand, g)
+        checar(u"a ancora e %s quando e a primeira que existe (x=%g)"
+               % (nome, x), r[1] == nome and abs(r[0] - x) < 1e-9, str(r))
+        del m[nome]
+    r = plano(m, mand, g)
+    checar(u"sem cranio, encefalo, C1 nem C2, nao ha ancora (o recuo e a "
+           u"caixa)", r == (None, None), str(r))
+    linhas = []
+    C.atms({"mandible": mand}, g, log=linhas.append)
+    checar(u"  e o log diz que o plano passou pelo centro da caixa da "
+           u"mandibula", any(l.startswith(u"TMJ:") and u"caixa da mandibula"
+                              in l for l in linhas), str(linhas[:2]))
+    r = plano({"mandible": mand}, mand, g, cru={"skull": cranio})
+    checar(u"o cranio que so esta no cru tambem ancora",
+           r[1] == "skull" and abs(r[0] - 48.5) < 1e-9, str(r))
+    r = plano({"mandible": mand, "skull": np.ones((5, 5, 5), bool),
+               "brain": ancoras["brain"]}, mand, g)
+    checar(u"ancora em outra grade fica de fora (vale a seguinte)",
+           r[1] == "brain", str(r))
+    junto = cranio | resto
+    r = plano({"mandible": resto, "skull": junto}, resto, g)
+    xs = np.arange(junto.shape[2])
+    ingenuo = float((junto.sum(axis=(0, 1)) * xs).sum()) / junto.sum()
+    checar(u"o cranio da base que contem a mandibula: o centro sai sem ela "
+           u"(48,5; com ela seria %.1f, puxado para o lado que sobrou)"
+           % ingenuo, r[1] == "skull" and abs(r[0] - 48.5) < 1e-9
+           and ingenuo - r[0] > 2.0, str(r))
+
+
+def teste_os_pulmoes_somados():
+    secao(u"v8.7: Lungs_ai e a soma dos pulmoes")
+    g = G.Grade((1.0, 1.0, 1.0))
+    pe = _cx(10, 40, 20, 60, 60, 90)
+    pd = _cx(10, 40, 20, 60, 10, 40)
+    c = C.pulmoes({"lung_left": pe, "lung_right": pd}, g)
+    checar(u"Lungs_ai = Lung_L + Lung_R",
+           c and np.array_equal(np.asarray(c.mascara, bool), pe | pd))
+    c1 = C.pulmoes({"lung_left": pe}, g)
+    checar(u"  com um pulmao so, e esse, e a descricao diz",
+           c1 and np.array_equal(np.asarray(c1.mascara, bool), pe)
+           and u"so o" in c1.descricao, c1.descricao if c1 else u"-")
+    checar(u"  e o nome e Lungs_ai", M.nome_clinico(C.CHAVE_PULMOES)
+           == u"Lungs_ai")
+    cz = C.pulmoes({}, g)
+    checar(u"sem pulmao nao sai", not cz)
+
+
+def _mandibula_com_dente():
+    mand = _cx(10, 20, 10, 40, 24, 76) & ~_cx(10, 20, 16, 40, 30, 70)
+    canal = _cx(12, 16, 25, 30, 71, 74)
+    alveolo = _cx(16, 20, 20, 26, 71, 75)
+    mand = mand & ~canal & ~alveolo
+    raiz = _cx(16, 20, 21, 25, 72, 74)
+    coroa = _cx(20, 24, 20, 26, 71, 75)
+    return mand, raiz | coroa, canal, alveolo
+
+
+def teste_a_mandibula_cheia():
+    secao(u"v8.7: a mandibula cheia, com os dentes inferiores por cima, e a "
+          u"suavizacao que nunca perde area")
+    g = G.Grade((1.0, 1.0, 1.0))
+    mand, dentes, canal, alveolo = _mandibula_com_dente()
+    c = C.mandibula_cheia({"mandible": mand, "teeth_lower": dentes}, g)
+    m = np.asarray(c.mascara, bool) if c else None
+    checar(u"sai, com a mandibula e os dentes inteiros",
+           m is not None and not ((mand | dentes) & ~m).any())
+    if m is None:
+        return
+    checar(u"  o canal fechado e preenchido", not (canal & ~m).any())
+    checar(u"  e o espaco entre a raiz e o alveolo tambem",
+           not (alveolo & ~m).any(), u"%d voxels" % int((alveolo & ~m).sum()))
+    checar(u"  e a descricao diz que inclui os dentes",
+           u"dentes inferiores" in c.descricao, c.descricao[:200])
+    c2 = C.mandibula_cheia({"mandible": mand}, g)
+    checar(u"sem os dentes carregados, a mandibula sai sem eles e diz",
+           c2 and not (np.asarray(c2.mascara, bool) & _cx(20, 24, 20, 26, 71,
+                                                           75)).any()
+           and u"sem os dentes" in c2.descricao)
+    spec = dict(M.CONSTRUCOES_POR_SAIDA()["mandible"])
+    bloco = _cx(10, 30, 20, 50, 30, 70)
+    masks = {"mandible": bloco.copy()}
+    M._suavizar_construcoes(masks, g, 1.5, {"mandible": spec}, [], [])
+    fim = np.asarray(masks["mandible"], bool)
+    checar(u"a segunda passada suaviza sem perder area (a uniao da suavizada "
+           u"com a cheia)", not (bloco & ~fim).any(),
+           u"%d voxels perdidos" % int((bloco & ~fim).sum()))
+    spec_i = dict(spec)
+    spec_i.pop("sem_perder_area", None)
+    masks_i = {"mandible": bloco.copy()}
+    M._suavizar_construcoes(masks_i, g, 1.5, {"mandible": spec_i}, [], [])
+    checar(u"ISCA: sem a uniao, a suavizacao come a quina (a checagem de "
+           u"cima reprovaria)",
+           bool((bloco & ~np.asarray(masks_i["mandible"], bool)).any()))
+
+
 def main():
     print(u"=" * 68)
     print(u"test_constructs | pericardio, Heart_ai, Bag_Bowel e vasos (v8.2)")
@@ -1056,7 +1386,12 @@ def main():
               teste_a_ordem_dos_vasos_e_a_casca,
               teste_nunca_levanta,
               teste_o_motor_e_chamado_e_nao_copiado,
-              teste_o_motor_registra_as_construcoes_daqui):
+              teste_o_motor_registra_as_construcoes_daqui,
+              teste_a_laringe,
+              teste_as_atms,
+              teste_o_plano_medio_da_atm,
+              teste_os_pulmoes_somados,
+              teste_a_mandibula_cheia):
         try:
             t()
         except Exception as e:

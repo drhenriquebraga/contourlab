@@ -79,6 +79,7 @@
     "test_skin.py",
     "test_tasks.py",
     "test_ts_runner.py",
+    "test_velocidade.py",
     "test_verseg.py",
     "test_watcher.py",
     "test_weights.py",

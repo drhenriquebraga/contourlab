@@ -11,30 +11,23 @@ import threading
 import time
 import traceback
 from collections import deque
-
-try:
-    import radai_archive as _arq
-    _TMP_LOCAL = _arq.pasta_temporaria_local()
-except Exception:
-    _TMP_LOCAL = tempfile.gettempdir()
 from datetime import datetime
 from pathlib import Path
-try:
-    import radai_falhas as _falhas
-except ImportError:
-    # GUARDA: carregado por caminho (as baterias), a pasta do vigia pode nao
-    # estar no `sys.path`; o modulo mora ao lado dele.
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    import radai_falhas as _falhas
+
+# GUARDA: o Python embeddable da estacao nao poe a pasta do script no caminho; nenhum import radai_* vem antes desta linha.
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+
+import radai_archive as _arq
+import radai_falhas as _falhas
+
+_TMP_LOCAL = _arq.pasta_temporaria_local()
 
 try:
     sys.stdout.reconfigure(errors="replace")
     sys.stderr.reconfigure(errors="replace")
 except Exception:
     pass
-
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
 
 import pydicom
 import uvicorn
@@ -236,6 +229,10 @@ STATUS_DIR=
 # «e' daqui que eu sempre parto».
 PASTA_FAVORITA=
 
+# O guia inicial ja foi visto nesta estacao. Quem grava e' o proprio guia, ao
+# concluir ou pular; vazio = o guia abre depois do aceite.
+GUIA_VISTO=
+
 # A ESCALA da suavizacao. Nao e "quanto alisar": QUANTO e decidido POR
 # ESTRUTURA, dentro do programa, e este numero multiplica a tabela inteira.
 # 1,5 usa a tabela como ela foi medida; 1,0 (o padrao) leva tudo a dois
@@ -276,6 +273,7 @@ DEFAULTS = {"ROOT": "", "DRY_RUN": "0",
             "MAX_RETRIES": "3", "DAYS_BACK": "0", "OUT_DIR": "",
             "LOG_DIR": "", "STATUS_DIR": "",
             "PASTA_FAVORITA": "",
+            "GUIA_VISTO": "",
             "SUAVIZAR_MM": "1.0"}
 
 CHAVES_OBSOLETAS = {
@@ -600,7 +598,6 @@ STATE = {
     "alertas_de_assinatura": [],
     "overnight": False,
     "overnight_desde": 0.0,
-    "overnight_pausados": [],
     "arranque": {"estado": "esperando", "passo": 0, "total": 0, "nome": "",
                  "arquivo": "", "segundos": 0.0},
     "dispositivo": {},
@@ -1247,6 +1244,7 @@ def _processo_vivo(pid):
         import ctypes
         from ctypes import wintypes
         PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
         ERROR_ACCESS_DENIED = 5
         ERROR_INVALID_PARAMETER = 87
         try:
@@ -1254,8 +1252,14 @@ def _processo_vivo(pid):
             k32.OpenProcess.restype = wintypes.HANDLE
             h = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
             if h:
-                k32.CloseHandle(h)
-                return True
+                # GUARDA: processo que ja saiu continua abrivel enquanto alguem segura um handle dele; o codigo de saida decide.
+                codigo = wintypes.DWORD()
+                try:
+                    saiu = (k32.GetExitCodeProcess(h, ctypes.byref(codigo))
+                            and codigo.value != STILL_ACTIVE)
+                finally:
+                    k32.CloseHandle(h)
+                return not saiu
             err = ctypes.get_last_error()
             if err == ERROR_ACCESS_DENIED:
                 return True
@@ -2439,6 +2443,29 @@ def _recusar_serie(s, e, limpo, assinatura, repetida):
     return False
 
 
+ASSINATURA_DO_IMPORT_FORA_DO_CAMINHO = u"'_arq' is not defined"
+
+
+def falha_do_import_fora_do_caminho(fl):
+    return (ASSINATURA_DO_IMPORT_FORA_DO_CAMINHO
+            in str((fl or {}).get("last_error") or u""))
+
+
+def liberar_falha_do_import(sdir, uid):
+    try:
+        m_path(sdir, uid, "fail").unlink()
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        wlog("nao consegui liberar a serie ...%s que falhou pelo import fora "
+             "do caminho (%s)" % (str(uid)[-8:], e))
+        return False
+    wlog("serie ...%s: a falha dela era o import fora do caminho, corrigido "
+         "nesta versao; o marcador de falha saiu e ela volta a fila"
+         % str(uid)[-8:])
+    return True
+
+
 def build_queue(series, done_dates):
     pendentes = []
     adiadas_agora, voltaram = 0, []
@@ -2462,6 +2489,9 @@ def build_queue(series, done_dates):
         if readotar_entrega(s):
             continue
         fl = read_marker(s["dir"], uid, "fail")
+        if falha_do_import_fora_do_caminho(fl) and liberar_falha_do_import(
+                s["dir"], uid):
+            fl = None
         _fora = _fora_da_fila_pela_falha(s, fl)
         if _fora == "nao_contornavel":
             NAO_CONTORNAVEIS.append({"dir": str(s["dir"]), "uid": uid,
@@ -3026,7 +3056,7 @@ def process_series(s):
                         except Exception:
                             pass
 
-                marcar_etapa("montando o FULL e o OAR", n_etapas, n_etapas)
+                marcar_etapa("montando o FULL e o STUDY", n_etapas, n_etapas)
                 try:
                     import SimpleITK as _sitk
                     _hu_serie = _sitk.GetArrayFromImage(ref)
@@ -4307,6 +4337,10 @@ TETO_DE_RECURSO_SEGUIDO = 3
 FRASE_DO_RECURSO_ESGOTADO = (u"o processo parece sem recurso (memória ou "
                              u"threads): feche e abra o programa")
 _RECURSO_SEGUIDO = {"n": 0, "avisou": False}
+# GUARDA: quem pede o fechar ao fim (o X do navegador, a atualizacao em espera) diz o motivo no proprio log; esta linha nao o supoe.
+FRASE_DO_FECHAR_AO_FIM = ("pediram o encerramento do programa ao fim da serie "
+                          "em curso: o vigia nao comeca outra serie, e o "
+                          "programa se encerra quando a que roda terminar")
 
 
 def contar_falha_de_recurso():
@@ -4848,8 +4882,7 @@ def _uma_volta(estado):
     if (_fila_da_estacao("fechando_ao_fim", padrao=False)
             and not STATE.get("overnight")):
         if not estado.get("avisou_fechando"):
-            wlog("o navegador foi fechado: o vigia nao comeca outra serie, e "
-                 "o programa se encerra quando a que roda terminar")
+            wlog(FRASE_DO_FECHAR_AO_FIM)
             estado["avisou_fechando"] = True
         time.sleep(2)
         return
@@ -4901,6 +4934,11 @@ def _uma_volta(estado):
             _sinalizar_em_uso_agora()
             process_series(s)
             _terminou = True
+            # GUARDA: so a serie pronta revarre na hora; a que falhou espera o intervalo, senao as tentativas se gastam em segundos.
+            if not fila and has_marker(s["dir"], s["uid"], "done"):
+                estado["proxima_varredura"] = 0.0
+                wlog("a fila do vigia esvaziou: varro de novo agora, para "
+                     "pegar o que chegou enquanto ela rodava")
         finally:
             if not _terminou:
                 _soltar_a_trava_do_que_nao_terminou(s, sys.exc_info()[0])
@@ -5262,8 +5300,6 @@ PAGE = u"""<!doctype html><html><head><meta charset="utf-8">
  background:var(--panel,#0c1322);border:1px solid var(--line,#1e293b);
  border-radius:14px;padding:20px 22px}
 #pl_cx h3{margin:0 0 4px 0;font-size:17px}
-.pl-prep{display:flex;gap:7px;align-items:center;font-size:12px;
- color:var(--text-muted,#8fa3bd);margin-right:auto;cursor:pointer}
 .pl-btn{text-align:right;white-space:nowrap}
 .pl-tp-cel{white-space:nowrap;min-width:140px}
 .pl-tp{display:flex;align-items:center;gap:5px;font-size:11px;margin:0 0 2px;
@@ -5316,7 +5352,7 @@ PAGE = u"""<!doctype html><html><head><meta charset="utf-8">
 .pl-conj label{display:flex;gap:8px;align-items:flex-start;margin:6px 0;font-size:12px;
  cursor:pointer}
 .pl-conj .aj{display:block;font-size:10.5px;color:var(--text-dim,#72829b);line-height:1.4}
-.pl-rodape{display:flex;gap:8px;margin-top:14px;position:sticky;bottom:0;
+.pl-rodape{display:flex;gap:8px;justify-content:flex-end;margin-top:14px;position:sticky;bottom:0;
  background:var(--panel,#0c1322);padding-top:10px}
 
 body{font-family:Segoe UI,Arial;background:var(--bg-0,#060d1a);color:var(--text,#e6edf7);margin:0;padding:18px}
@@ -5340,7 +5376,6 @@ h1{font-size:20px;margin:0 0 2px 0}.a{color:var(--accent,#4DA3FF)}.sub{color:var
 .ov-chip{display:inline-block;border:1px solid rgba(255,255,255,.16);
  border-radius:999px;padding:1px 9px;margin:2px 5px 2px 0;font-size:11.5px;
  opacity:.85;white-space:nowrap}
-.ov-chip.pausado{border-color:rgba(129,140,248,.5)}
 .ov-chip.parada{border-color:rgba(255,120,120,.55)}
 .ov-chip.eu{border-color:rgba(120,220,160,.55);font-weight:600}
 .ov-gira{display:inline-block;width:13px;height:13px;border-radius:50%;
@@ -5423,6 +5458,11 @@ a.menu:hover{background:var(--line-strong,#2a3a55)}
 .fp .fpi:hover{background:var(--panel-2);color:var(--text)}
 .fp .fpi.drv{display:inline-block;width:auto;
  border:1px solid var(--line-strong);margin:0 5px 6px 0}
+.fp-fav{padding:7px 9px;min-width:34px}
+.fp-fav:not(:disabled) svg{color:var(--warn,#E1B23B)}
+.fp-fav:disabled{opacity:.45;cursor:default}
+.fp .fpmapa{font-size:12px;color:var(--text-dim);margin:6px 0 0}
+.fp .fpmapa:empty{display:none}
 </style></head><body>
 <header class="rc-topo"><a class="rc-marca" href="/" title="Radioterapia.AI Local"><span class="rc-nome">radioterapia<span class="g">.ai</span></span><span class="rc-sub" data-radai-frase>Local Suite</span></a><span class="rc-seta">&#8594;</span><span class="rc-tela">Vigia de Segmentação</span><div class="dir"><a class="rc-voltar" href="/">&#8592; Voltar ao menu</a></div></header>
 <div class="topo">
@@ -5445,7 +5485,7 @@ a.menu:hover{background:var(--line-strong,#2a3a55)}
 
 A serie em curso TERMINA; nenhuma nova comeca.
 
-Desligar?')) act('vigia/desligar')">@ICO_POWER@<span data-radai-frase>Desligar a fila</span></button><button id="btNoite" title="Dedica esta estação à noite: liga a fila, pausa os serviços que disputam memória e passa a pegar o caso mais recente primeiro." onclick="noiteIniciar()">@ICO_LUA@Iniciar overnight run</button></div>
+Desligar?')) act('vigia/desligar')">@ICO_POWER@<span data-radai-frase>Desligar a fila</span></button><button id="btNoite" title="Dedica esta estação à noite: liga a fila e passa a pegar o caso mais recente primeiro." onclick="noiteIniciar()">@ICO_LUA@Iniciar overnight run</button></div>
 </div>
 
 <div class="ov-faixa" id="ovFaixa" style="display:none">
@@ -5458,7 +5498,6 @@ Desligar?')) act('vigia/desligar')">@ICO_POWER@<span data-radai-frase>Desligar a
    <button id="btNoiteFim" onclick="noiteEncerrar()">@ICO_SOL@<span data-radai-frase>Encerrar overnight run</span></button>
   </span>
  </div>
- <div class="ov-linha" id="ovServicos"></div>
  <div class="ov-linha" id="ovFrota"></div>
 </div>
 
@@ -5482,6 +5521,9 @@ Desligar?')) act('vigia/desligar')">@ICO_POWER@<span data-radai-frase>Desligar a
   <div class="linha">
    <input type="text" id="rootIn" spellcheck="false"
           placeholder="\\\\servidor\\compartilhamento\\Pacientes">
+   <button type="button" class="ui-bt fp-fav" id="btFav" disabled
+           title="Nenhuma pasta favorita configurada"
+           aria-label="Nenhuma pasta favorita configurada">@ICO_ESTRELA@</button>
    <button class="ui-bt" id="btPastas">@ICO_PASTA@<span data-radai-frase>Procurar…</span></button>
    <button class="ui-bt" id="btTestar" data-radai-frase>Testar</button>
    <button class="ui-bt pri" id="btRoot" data-radai-frase>Aplicar</button>
@@ -5552,8 +5594,6 @@ Desligar?')) act('vigia/desligar')">@ICO_POWER@<span data-radai-frase>Desligar a
   <span class="sub" id="pl_loc_conta"></span></div>
  <div id="pl_corpo"></div>
  <div class="pl-rodape">
-  <label class="pl-prep"><input type="checkbox" id="pl_prep">
-   <span>preparar a esta&ccedil;&atilde;o antes (parar servi&ccedil;os da lista e limpar cache)</span></label>
   <button class="pri" id="pl_ok" onclick="planoConfirmar()">Começar</button>
   <button onclick="planoFechar()">Cancelar</button>
  </div>
@@ -5759,9 +5799,7 @@ function noiteIniciar(){
   ok:'Dedicar a noite',
   html:'<ul><li>a fila liga e passa a pegar o <b>caso mais recente</b> '
    +'primeiro</li>'
-   +'<li>os servicos do Windows que disputam memoria sao pausados</li>'
-   +'<li>as outras telas da suite ficam trancadas ate voce encerrar</li></ul>'
-   +'<p>Ao encerrar, os servicos voltam ao estado em que estavam.</p>',
+   +'<li>as outras telas da suite ficam trancadas ate voce encerrar</li></ul>',
   aoSim:function(){
  fetch('/api/overnight/iniciar',{method:'POST'}).then(r=>r.json()).then(d=>{
   if(d && d.ok===false && d.erro) alert(d.erro);
@@ -5773,13 +5811,9 @@ function noiteEncerrar(){
  uiPainel({
   titulo:'Encerrar o overnight run?',
   ok:'Encerrar o turno',
-  html:'<p>A serie em curso <b>termina</b>; nenhuma nova comeca.</p>'
-   +'<p>Os servicos pausados voltam ao estado em que estavam.</p>',
+  html:'<p>A serie em curso <b>termina</b>; nenhuma nova comeca.</p>',
   aoSim:function(){
  fetch('/api/overnight/encerrar',{method:'POST'}).then(r=>r.json()).then(d=>{
-  if(d && d.falhas && d.falhas.length)
-   alert('Encerrado. Estes nao voltaram agora e voltam no proximo arranque '
-    +'da estacao:\\n\\n' + d.falhas.join('\\n'));
   upd();
  }).catch(function(){ if(window.uiConexao) uiConexao(false) });
   }});
@@ -5847,25 +5881,7 @@ function planoFechar(){
  document.getElementById('pl_cx').style.display='none';
 }
 function planoConfirmar(){
- var prep = document.getElementById('pl_prep');
- if(!prep || !prep.checked){ planoFechar(); filaComecar(); return; }
- var bt = document.getElementById('pl_ok');
- bt.disabled = true; bt.textContent = 'preparando a estacao...';
- fetch('/api/limpador', {method:'POST'}).then(function(r){return r.json()})
- .then(function(d){
-  var passos = (d.servicos||[]).filter(function(x){return x.estado==='rodando'})
-    .map(function(x){ return fetch('/api/limpador/parar', {method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({nome:x.nome})}); });
-  passos = passos.concat((d.recuperavel||[])
-    .filter(function(i){ return i.apagavel && i.sugerido })
-    .map(function(i){ return fetch('/api/limpador/liberar', {method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({chave:i.chave})}); }));
-  return Promise.all(passos);
- }).catch(function(){ /* preparar e um extra: falhar aqui nao pode custar
-    a noite inteira, e o lote roda igual numa maquina nao preparada. */ })
- .then(function(){ planoFechar(); filaComecar(); });
+ planoFechar(); filaComecar();
 }
 
 function filaComecar(){
@@ -5977,7 +5993,7 @@ function planoPintar(d){
 
  var est=d.estacao||{}, mem=est.memoria||{}, av=[];
  if(mem.total_mb && mem.livre_mb < 4000) av.push('Memoria livre baixa: '
-   +mem.livre_mb+' MB. Ver Configuracoes, Otimizar processamento.');
+   +mem.livre_mb+' MB.');
  (est.disco||[]).forEach(function(u){ if(u.aperta) av.push('Pouco espaco em '
    +u.unidade+': '+u.livre_gb+' GB livres.'); });
  (est.ganhos||[]).forEach(function(g){
@@ -6114,22 +6130,6 @@ function upd(){fetch('/api/status').then(r=>r.json()).then(d=>{
      + ' <span data-radai-frase>concluída(s) nesta estação</span>'
      + ' · ' + (d.n_queue||0) + ' <span data-radai-frase>na fila</span>'
      + ' · <span data-radai-frase>ordem: caso mais recente primeiro</span>');
-   var os_=document.getElementById('ovServicos');
-   if(os_){
-    var ps=d.overnight_pausados||[];
-    var frPausados = 'Serviços pausados para liberar memória:';
-    var frSemPausa = 'Nenhum serviço pausado.';
-    var frPorQue = 'Eles precisam de administrador nesta estação, ou já estavam parados. A noite roda assim mesmo, com um pouco menos de memória livre.';
-    var frVoltam = 'Eles voltam ao estado em que estavam quando você encerrar — e também sozinhos, se a estação reiniciar.';
-    var h = ps.length
-      ? '<b data-radai-frase>' + frPausados + '</b> '
-        + ps.map(function(n){return '<span class="ov-chip pausado">'+n+'</span>'}).join('')
-      : '<span style="opacity:.7"><b data-radai-frase>' + frSemPausa
-        + '</b> <span data-radai-frase>' + frPorQue + '</span></span>';
-    h += '<br><span style="opacity:.62" data-radai-frase>' + frVoltam
-      + '</span>';
-    uiHTML(os_, h);
-   }
   }
  }
  temMR(d.rm_no_disco !== false);
@@ -6211,12 +6211,53 @@ function abrirPasso1(){
  if(campo) setTimeout(function(){ campo.focus() }, 300);
 }
 document.getElementById('btVarrer').addEventListener('click', salvarVarrer);
-function listarPastas(caminho){
+function favPintar(f){
+ var b=document.getElementById('btFav');
+ if(b){
+  var t=f?'Preencher com a pasta favorita':'Nenhuma pasta favorita configurada';
+  b.disabled=!f; b.title=t; b.setAttribute('aria-label',t);
+ }
+ return f;
+}
+function favCarregar(){
+ return fetch('/api/pastas/favorita',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})
+ .then(function(r){return r.json()})
+ .then(function(d){ return favPintar((d&&d.favorita)||'') })
+ .catch(function(){ return favPintar('') });
+}
+function favUsar(){
+ return favCarregar().then(function(f){
+  if(!f) return '';
+  var i=document.getElementById('rootIn');
+  i.value=f;
+  try{ i.focus() }catch(e){}
+  return f;
+ });
+}
+function mapearUnidade(){
+ var b=document.getElementById('fpMapear'), m=document.getElementById('fpMapa');
+ if(b) b.disabled=true;
+ if(m) m.textContent='A janela do Windows abriu: escolha a letra e a pasta de rede. Se ela não aparecer, procure na barra de tarefas.';
+ return fetch('/api/pastas/mapear',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})
+ .then(function(r){return r.json()}).then(function(d){
+  var novas=(d&&d.novas)||[];
+  if(novas.length || (d && d.ok)){
+   return listarPastas(novas.length?novas[0]:'',
+                       novas.length?('Unidade mapeada: '+novas.join(' ')):'');
+  }
+  if(b) b.disabled=false;
+  if(m) m.textContent=(d&&d.erro)||'';
+ }).catch(function(e){
+  if(b) b.disabled=false;
+  if(m) m.textContent='Não consegui abrir o mapeamento de unidade. '+e;
+ });
+}
+function listarPastas(caminho, aviso){
  var cx=document.getElementById('fpVigia');
  var esc2=function(t){return String(t==null?'':t).replace(/[&<>"]/g,function(c){
    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});};
  cx.style.display='block'; cx.innerHTML='<div class="dica">listando…</div>';
- fetch('/api/pastas',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({caminho:caminho||''})})
+ return fetch('/api/pastas',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({caminho:caminho||''})})
  .then(function(r){return r.json()}).then(function(d){
   var h='<div class="fpcam">'+esc2(d.caminho||'(unidades desta máquina)')+'</div>';
   (d.unidades||[]).forEach(function(u){
@@ -6226,13 +6267,18 @@ function listarPastas(caminho){
    h+='<div class="fpi" data-c="'+esc2(p.caminho)+'">'+esc2(p.nome)+'</div>'; });
   if(d.erro) h+='<div class="erro">'+esc2(d.erro)+'</div>';
   h+='<div class="linha"><button class="bt" id="fpUsar">Usar esta pasta</button>'
-   + '<button class="bt" id="fpFechar">Fechar</button></div>';
+   + '<button class="bt" id="fpMapear">@ICO_REDE@<span data-radai-frase>Mapear nova unidade de rede</span></button>'
+   + '<button class="bt" id="fpFechar">Fechar</button></div>'
+   + '<div class="fpmapa" id="fpMapa" role="status" aria-live="polite"></div>';
   cx.innerHTML=h;
+  if(aviso) document.getElementById('fpMapa').textContent=aviso;
  }).catch(function(e){ cx.innerHTML='<div class="erro">Nao consegui listar: '+e+'</div>'; });
 }
+document.getElementById('btFav').addEventListener('click', favUsar);
 document.getElementById('btPastas').addEventListener('click', function(){
  listarPastas((document.getElementById('rootIn').value||'').trim()); });
 document.getElementById('fpVigia').addEventListener('click', function(ev){
+ if(ev.target.closest('#fpMapear')){ mapearUnidade(); return; }
  if(ev.target.id==='fpFechar'){ this.style.display='none'; return; }
  if(ev.target.id==='fpUsar'){
   var cam=this.querySelector('.fpcam');
@@ -6248,8 +6294,18 @@ document.getElementById('btTestar').addEventListener('click',
 document.getElementById('rootIn').addEventListener('keydown', function(e){
  if(e.key==='Enter') salvarRoot(true);
 });
-setInterval(upd,3000);upd();carregarVarrer();
+setInterval(upd,3000);upd();carregarVarrer();favCarregar();
 </script></body></html>"""
+
+
+def pagina_de_reserva():
+    try:
+        import radai_ui
+        icone = radai_ui.icone
+    except Exception:
+        icone = None
+    return re.sub(u"@ICO_([A-Z_]+)@",
+                  lambda m: icone(m.group(1).lower()) if icone else u"", PAGE)
 
 
 def _com_menu(pagina, ativo):
@@ -6294,7 +6350,6 @@ def status():
                 "overnight": STATE["overnight"],
                 "overnight_h": (max(0.0, time.time() - STATE["overnight_desde"]) / 3600.0
                                 if STATE["overnight_desde"] else 0.0),
-                "overnight_pausados": list(STATE["overnight_pausados"]),
                 "turno_agendado": turno_agendado,
                 "current": atual, "done_today": STATE["done_today"],
                 "ocupado": ocupado,
@@ -6568,6 +6623,15 @@ def _abrir_turno(origem):
             wlog(u"o card do turno nao foi fechado na fila (%s: %s)"
                  % (type(e).__name__, str(e)[:120]))
 
+    def _marcar_aberto(motivo):
+        if fila_ov is None or cfg_turno is None:
+            return
+        try:
+            fila_ov.marcar_turno_aberto(erro_sem_caminho_nem_uid(motivo))
+        except Exception as e:
+            wlog(u"o card do turno nao foi marcado aberto na fila (%s: %s)"
+                 % (type(e).__name__, str(e)[:120]))
+
     def _recusar(resposta, motivo):
         wlog(u"o turno da noite NAO abriu (%s): %s" % (quem, motivo))
         _fechar(Q_FALHOU, motivo)
@@ -6576,19 +6640,14 @@ def _abrir_turno(origem):
         resposta.setdefault("erro", motivo)
         return resposta
 
-    _pausar = True
-    if cfg_turno is not None:
-        _pausar = bool(cfg_turno.get("pausar_servicos", True))
     tmp = dict((cfg_turno or {}).get("temporarios") or {})
 
     if STATE.get("overnight"):
-        _fechar(Q_FEITO, u"o turno ja estava aberto nesta estacao"
+        _marcar_aberto(u"o turno ja estava aberto nesta estacao"
                 + (u"; os valores deste card (%s) nao foram aplicados"
                    % ", ".join(sorted(tmp)) if tmp else u""))
         return {"ok": True, "ja_aberto": True,
-                "pausados": list(STATE.get("overnight_pausados") or []),
-                "n_pausados": len(STATE.get("overnight_pausados") or []),
-                "servicos": [], "recarga_pendente": recarga_pendente(),
+                "recarga_pendente": recarga_pendente(),
                 "temporario": chaves_so_do_turno()}
 
     aplicados = []
@@ -6627,15 +6686,6 @@ def _abrir_turno(origem):
                       u"so entra entre series) e a pasta em uso esta vazia")
         return _recusar(r, motivo)
 
-    try:
-        import radai_overnight
-        res = radai_overnight.iniciar(pausar_servicos=_pausar, log=wlog)
-    except Exception as e:
-        wlog("nao consegui pausar os servicos (%s) — o overnight run comeca "
-             "assim mesmo, sem liberar memoria" % str(e)[:140])
-        res = {"ok": False, "servicos": [], "msg": str(e)[:140]}
-    pausados = [s.get("nome") for s in (res.get("servicos") or [])
-                if s.get("acao") == "parado"]
     with _RECARGA_FEITA:
         if "ROOT" in TURNO_TEMPORARIO:
             _root_aberto = TURNO_TEMPORARIO["ROOT"]
@@ -6649,10 +6699,10 @@ def _abrir_turno(origem):
     with LOCK:
         STATE["overnight"] = True
         STATE["overnight_desde"] = time.time()
-        STATE["overnight_pausados"] = pausados
     wlog("=== OVERNIGHT RUN aberto nesta estacao (%s) — a fila pega o caso "
-         "mais recente primeiro, e %d servico(s) estao pausados ==="
-         % (quem, len(pausados)))
+         "mais recente primeiro ===" % quem)
+    wlog("energia: com o turno aberto, a estacao fica acordada ate o turno "
+         "ser encerrado, mesmo com a fila vazia")
     aviso = u""
     if pendente:
         aviso = (u"A configuração nova ainda não foi aplicada: o vigia termina "
@@ -6666,10 +6716,8 @@ def _abrir_turno(origem):
         motivo += u"; so neste turno: %s" % ", ".join(aplicados)
     if pendente:
         motivo += u"; a configuracao nova vale quando a serie em curso terminar"
-    _fechar(Q_FEITO, motivo)
-    return {"ok": True, "pausados": pausados,
-            "n_pausados": len(pausados), "servicos": res.get("servicos") or [],
-            "recarga_pendente": pendente, "aviso": aviso,
+    _marcar_aberto(motivo)
+    return {"ok": True, "recarga_pendente": pendente, "aviso": aviso,
             "temporario": aplicados}
 
 
@@ -6678,37 +6726,28 @@ Q_FEITO, Q_FALHOU = "pronto", "falhou"
 
 @app.post("/api/overnight/encerrar")
 def overnight_encerrar():
-    religados, falhas = 0, []
-    try:
-        import radai_overnight
-        r = radai_overnight.encerrar(log=wlog)
-        religados, falhas = r.get("religados", 0), r.get("falhas") or []
-    except Exception as e:
-        wlog("nao consegui religar os servicos (%s) — eles voltam sozinhos no "
-             "proximo arranque da estacao" % str(e)[:140])
-        falhas = [str(e)[:140]]
     adiada = bool(root_para_o_proximo_turno())
     with _RECARGA_FEITA:
         ROOT_DO_TURNO.clear()
     with LOCK:
         STATE["overnight"] = False
         STATE["overnight_desde"] = 0.0
-        STATE["overnight_pausados"] = []
         STATE["ligado"] = False
         STATE["paused"] = False
-    wlog("=== OVERNIGHT RUN encerrado — %d servico(s) religado(s); a serie "
-         "atual termina e nenhuma nova comeca ===" % religados)
+    wlog("=== OVERNIGHT RUN encerrado — a serie atual termina e nenhuma nova "
+         "comeca ===")
     devolvidos = _descartar_temporarios(u"o turno foi encerrado")
     if adiada:
         pedir_recarga()
         wlog(u"o turno acabou: a pasta nova do ROOT passa a valer")
     try:
         import radai_queue_state as _fila_ov
+        _fila_ov.fechar_turno(Q_FEITO, u"turno encerrado as %s"
+                              % datetime.now().strftime("%H:%M"))
         _fila_ov.tirar_turno_cumprido()
     except Exception:
         pass
-    return {"ok": True, "religados": religados, "falhas": falhas,
-            "devolvidos": devolvidos}
+    return {"ok": True, "devolvidos": devolvidos}
 
 
 @app.get("/api/overnight/frota")
@@ -6918,7 +6957,30 @@ if radai_panel is not None:
 else:
     @app.get("/", response_class=HTMLResponse)
     def home_sem_landing():
-        return PAGE
+        return pagina_de_reserva()
+
+    @app.post("/api/pastas")
+    async def _pastas_na_reserva(request: Request):
+        try:
+            c = await request.json()
+        except Exception:
+            c = None
+        c = c if isinstance(c, dict) else {}
+        return radai_config.listar_pastas(str(c.get("caminho") or ""), "",
+                                          str(c.get("busca") or ""))
+
+    @app.post("/api/pastas/favorita")
+    def _favorita_na_reserva():
+        return {"favorita": radai_config.pasta_favorita() or u""}
+
+    @app.post("/api/pastas/mapear")
+    def _mapear_na_reserva():
+        try:
+            import radai_varrer
+            return radai_varrer.mapear_unidade()
+        except Exception as e:
+            return {"ok": False, "novas": [],
+                    "erro": u"%s: %s" % (type(e).__name__, str(e)[:200])}
 
 
 SERVIDOR = {"s": None}
@@ -6947,6 +7009,9 @@ def _adiadas_voltam_logo(agora=None):
 
 def fila_ocupada():
     if quem_esta_segmentando() is not None:
+        return True
+    # GUARDA: com o turno aberto a varredura do intervalo so acontece com a estacao acordada, mesmo de fila vazia.
+    if STATE.get("overnight"):
         return True
     if (STATE.get("ligado") and not STATE.get("paused")
             and (STATE.get("n_queue") or 0) > 0):
@@ -7147,13 +7212,6 @@ def encerrar_tudo(motivo=u"pelo operador"):
         _fq_fim.ao_fechar()
     except Exception as e:
         wlog("encerrando: a fila nao foi gravada (%s)" % type(e).__name__)
-    if STATE.get("overnight"):
-        try:
-            import radai_overnight as _ov
-            _ov.encerrar(log=wlog)
-        except Exception as e:
-            wlog("encerrando: nao consegui religar os servicos do overnight "
-                 "(%s); eles voltam no proximo arranque" % type(e).__name__)
     encerrar_sinalizacao()
     salvar_status()
     srv = SERVIDOR.get("s")
@@ -7292,6 +7350,24 @@ def _ligar_a_fila_da_estacao():
     return r
 
 
+def abrir_o_turno_que_voltou_da_fila():
+    try:
+        import radai_queue_state as _fq
+        if not _fq.turno_na_vez():
+            return None
+    except Exception:
+        return None
+    lote = sys.modules.get("radai_batch")
+    try:
+        if lote is not None and (lote.estado() or {}).get("rodando"):
+            return None
+    except Exception:
+        pass
+    wlog("a fila voltou do disco com o card do Overnight Run na vez e nada "
+         "na frente dele: abrindo o turno")
+    return abrir_turno_pela_fila()
+
+
 def main():
     _abrir_log()
     oculto = _preparar_motor_oculto()
@@ -7349,11 +7425,12 @@ def main():
 
     try:
         import radai_overnight as _ov
-        _ov.restaurar_se_pendente(log=wlog)
+        _ov.apagar_registro_antigo(log=wlog)
+        import radai_cleaner as _limp
+        _limp.apagar_estado_antigo_do_otimizar(log=wlog)
     except Exception as e:
-        wlog("nao consegui conferir o overnight run da noite passada (%s) — "
-             "servico pausado volta no proximo arranque do Windows"
-             % str(e)[:120])
+        wlog("nao consegui apagar o registro antigo da pausa de servicos "
+             "(%s)" % str(e)[:120])
 
     _ligar_a_fila_da_estacao()
     threading.Thread(target=soltar_travas_mortas_do_indice, daemon=True,
@@ -7362,6 +7439,8 @@ def main():
     wlog("painel atende so por %s"
          % " e ".join(sorted(hosts_permitidos(PORT))))
     threading.Thread(target=worker_loop, daemon=True).start()
+    threading.Thread(target=abrir_o_turno_que_voltou_da_fila, daemon=True,
+                     name="radai-turno-ao-abrir").start()
     iniciar_sinalizacao()
     config = config_do_servidor(app, PORT)
     SERVIDOR["s"] = uvicorn.Server(config)

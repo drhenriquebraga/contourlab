@@ -1446,6 +1446,16 @@ def teste_o_nv_nao_liga_por_omissao_em_caminho_nenhum():
            and u"def motores_da_estacao(" not in fonte)
 
 
+def _varrer_pela_casca(pasta, uso="lote"):
+    import radai_varrer
+    d = radai_varrer.iniciar(uso, pasta, dias=0, em_segundo_plano=False)
+    fora = dict(d.get("extra") or {})
+    fora["series"] = list(d.get("linhas") or [])
+    if d.get("erro"):
+        fora["erro"] = d["erro"]
+    return fora
+
+
 def teste_a_coluna_de_modalidade_roteia_os_plugins_da_linha():
     secao(u"a coluna TC/RM: a lista, o dropdown e a triagem")
     import radai_modes as md
@@ -1475,12 +1485,11 @@ def teste_a_coluna_de_modalidade_roteia_os_plugins_da_linha():
             L.montar(app, {"tasks": ["total"], "device": "cpu",
                            "min_cortes": 20})
             cli = TestClient(app)
-            r = cli.post("/api/lote/varrer", json={"pasta": base})
-            sr = (r.json() or {}).get("series") or []
+            sr = _varrer_pela_casca(base).get("series") or []
             rota = sorted(str(s.get("modalidade") or "") for s in sr)
-            checar(u"/api/lote/varrer devolve as duas modalidades",
-                   rota == ["CT", "MR"],
-                   u"veio %s -- a rota chama varrer() sem `modalidades`?"
+            checar(u"a varredura da tela (uso lote) devolve as duas "
+                   u"modalidades", rota == ["CT", "MR"],
+                   u"veio %s -- a varredura chama varrer() sem `modalidades`?"
                    % (rota or u"nada"))
 
             ct = cli.get("/api/lote/opcoes?modalidade=CT").json()
@@ -2232,63 +2241,24 @@ def teste_o_explorador_do_passo_1():
         shutil.rmtree(base, ignore_errors=True)
 
 
-def teste_otimizar_a_estacao_ao_iniciar():
-    secao(u"otimizar a estacao ao iniciar")
-    import radai_overnight as OV
-    import radai_cleaner as LP
-    chamadas = []
-    guard = (OV.estado, OV.iniciar, OV.encerrar, LP.estado_dos_servicos,
-             LP._rodar)
+def teste_o_otimizar_saiu_do_lote():
+    secao(u"o lote nao sugere nem aplica mais o Otimizar")
+    for nome in ("sugestao_de_otimizacao", "otimizar_estacao",
+                 "ocupantes_da_placa"):
+        checar(u"`%s` saiu" % nome, not hasattr(L, nome))
     try:
-        OV.estado = lambda *a, **k: {"ativo": False, "n_pausados": 0,
-                                     "pausados": []}
-        LP.estado_dos_servicos = lambda: [
-            {"nome": "SysMain", "estado": "rodando"},
-            {"nome": "WSearch", "estado": "parado"}]
-        LP._rodar = lambda args, timeout=25: (True, (
-            "1234, C:\\Program Files\\Teams\\ms-teams.exe, 512\n"
-            "4321, C:\\Varian\\Eclipse\\Eclipse.exe, 2048\n"
-            "77, C:\\x\\msedge.exe, [N/A]\n"))
-        d = L.sugestao_de_otimizacao()
-        nomes = [p["nome"] for p in d["placa"]]
-        checar(u"a sugestao nomeia o que ocupa a placa",
-               u"ms-teams.exe" in nomes and u"msedge.exe" in nomes, str(nomes))
-        checar(u"  e em WDDM (uso `[N/A]`) o nome sai com a memoria vazia",
-               [p["mb"] for p in d["placa"] if p["nome"] == u"msedge.exe"]
-               == [None], str(d["placa"]))
-        checar(u"o programa clinico PROTEGIDO nao e nomeado -- e contado",
-               not [n for n in nomes if u"eclipse" in n.lower()]
-               and d["protegidos_na_placa"] == 1,
-               u"nome ao lado de «Otimizar» seria lido como conselho de fechar")
-        checar(u"os servicos que a otimizacao pausaria sao os que RODAM",
-               d["servicos"] == [u"SysMain"], str(d["servicos"]))
-
-        OV.iniciar = lambda **k: chamadas.append(("iniciar", k)) or {
-            "ok": True, "servicos": [], "msg": u"1 pausado(s)"}
-        OV.encerrar = lambda **k: chamadas.append(("encerrar", k)) or {
-            "ok": True, "religados": 1}
-        L.otimizar_estacao(True)
-        checar(u"«Otimizar» liga o TURNO, com pausa de servicos",
-               chamadas and chamadas[0][0] == "iniciar"
-               and chamadas[0][1].get("pausar_servicos") is True, str(chamadas))
-        L.otimizar_estacao(False)
-        checar(u"  e «Restaurar» o encerra", chamadas[-1][0] == "encerrar",
-               str(chamadas))
-        OV.estado = lambda *a, **k: {"ativo": True, "n_pausados": 3,
-                                     "pausados": ["SysMain"]}
-        n_antes = len(chamadas)
-        d2 = L.sugestao_de_otimizacao()
-        checar(u"com o turno ligado, a sugestao cala",
-               d2["turno_ativo"] is True and not d2["placa"], str(d2))
-    finally:
-        (OV.estado, OV.iniciar, OV.encerrar, LP.estado_dos_servicos,
-         LP._rodar) = guard
-    import inspect
-    fonte = inspect.getsource(L.otimizar_estacao)
-    checar(u"«Otimizar» nao passa pela rota que liga o vigia",
-           u"/api/overnight/iniciar" not in fonte
-           and u"vigia_ligar" not in fonte
-           and u"radai_overnight.iniciar(" in fonte)
+        from fastapi import FastAPI
+        app = FastAPI()
+        L.montar(app, {"tasks": ["total"], "device": "cpu"})
+        rotas = set(getattr(r, "path", u"") for r in app.routes)
+        checar(u"as rotas /api/lote/otimizacao e /api/lote/otimizar sairam",
+               not ({"/api/lote/otimizacao", "/api/lote/otimizar"} & rotas)
+               and "/api/pipeline/iniciar" in rotas, len(rotas))
+    except ImportError as e:
+        checar(u"as rotas (fastapi ausente)", True, str(e))
+    js = L.PAGINA
+    checar(u"a folha do turno nao manda mais a pausa de servicos",
+           u"pausar_servicos" not in js and u"ov_pausar" not in js)
 
 
 def teste_o_andamento_vai_para_o_card_que_roda():
@@ -2445,7 +2415,7 @@ def teste_a_conferencia_soma_os_modos_das_series():
         rv = (TestClient(app).get("/api/pipeline/revisao").json() or {}).get(
             "revisao") or {}
         cj = dict((c["cod"], c) for c in rv.get("conjuntos") or ())
-        checar(u"so FAST: o RadAI_OAR_Fast sai, e e o entregue",
+        checar(u"so FAST: o RadAI_STUDY_Fast sai, e e o entregue",
                (cj.get("fast") or {}).get("sai") is True
                and (cj.get("fast") or {}).get("entregue") is True,
                str(cj.get("fast")))
@@ -3095,11 +3065,15 @@ def teste_o_explorador_nao_devolve_o_caminho_no_erro():
     checar(u"  e o caminho nao volta", u"ISCA" not in cru
            and u"BELTRANO" not in cru
            and pasta not in cru.replace(u"\\\\", u"\\"), cru[:200])
-    corpo = lote_py_txt()
-    corpo = corpo[corpo.index(u"function fpPintarLista("):]
-    corpo = corpo[:corpo.index(u"\nfunction ")]
-    checar(u"a tela poe a classe num <code>, fora da frase que se traduz",
+    import radai_ui as _U
+    corpo = _U.COMPONENTES_JS
+    corpo = corpo[corpo.index(u"function fpLista("):]
+    corpo = corpo[:corpo.index(u"\n function ")]
+    checar(u"a tela (o explorador da casca, que o Rodar agora usa) poe a classe "
+           u"num <code>, fora da frase que se traduz",
            u"d.tipo" in corpo and u"<code>" in corpo, corpo[:120])
+    checar(u"  e o Rodar agora não tem mais seletor próprio",
+           u"function fpPintarLista(" not in lote_py_txt())
 
 
 def teste_a_fila_que_nao_se_le_nao_e_vazia():
@@ -3141,16 +3115,20 @@ def teste_a_fila_que_nao_se_le_nao_e_vazia():
     mortas = (("POST", u"/api/lote/previa"), ("POST", u"/api/lote/iniciar"),
               ("POST", u"/api/lote/revisao"), ("POST", u"/api/lote/estruturas"),
               ("POST", u"/api/lote/mpr"), ("GET", u"/api/lote/imagem"),
-              ("GET", u"/api/lote/estado"), ("POST", u"/api/lote/cancelar"))
+              ("GET", u"/api/lote/estado"), ("POST", u"/api/lote/cancelar"),
+              ("POST", u"/api/lote/varrer"))
     checar(u"as rotas sem tela que as chame sairam (a previa de um corte, o "
            u"iniciar da demo, a revisao, as estruturas, o MPR e a imagem "
-           u"dele, o estado e o cancelar do lote)",
+           u"dele, o estado e o cancelar do lote, o POST unico da varredura)",
            not [r for r in mortas if r in vivas],
            str([r for r in mortas if r in vivas]))
-    checar(u"  e o «Rodar agora» continua com as rotas que a tela chama",
+    import radai_varrer as _V
+    checar(u"  e o «Rodar agora» continua com o que a tela chama (a "
+           u"varredura da casca no uso «lote»)",
            ("POST", u"/api/pipeline/iniciar") in vivas
            and ("POST", u"/api/pipeline/cancelar") in vivas
-           and ("POST", u"/api/lote/varrer") in vivas, str(sorted(
+           and _V.uso("lote") is not None
+           and u"uiVarrer({uso: 'lote'" in L._pagina(), str(sorted(
                p for m, p in vivas if p.startswith(u"/api/lote"))))
     import radai_models as _RM
     checar(u"o radai_models nao monta rota (nenhuma tela lista, escolhe ou "
@@ -3819,15 +3797,15 @@ def teste_a_linha_cabe_e_fala_com_o_leitor_de_tela():
            "num no so, nao esta mais la",
            u"'&#9888; já tem um RTSTRUCT na pasta'" not in p)
     checar("o «x» de cada tag diz qual estrutura tira (molde)",
-           u"'tirar %s do OAR desta série'.replace('%s', it.nome || it.chave)" in p
-           and u'aria-label="tirar do OAR desta série"' not in p)
+           u"'tirar %s do STUDY desta série'.replace('%s', it.nome || it.chave)" in p
+           and u'aria-label="tirar do STUDY desta série"' not in p)
     checar("  e o «+» diz qual devolve",
-           u"'devolver %s ao OAR'.replace('%s', it.nome || it.chave)" in p)
+           u"'devolver %s ao STUDY'.replace('%s', it.nome || it.chave)" in p)
     checar("o `?` diz que abre a ajuda, e de que (molde)",
            u"'abrir a ajuda de %s'.replace('%s'" in p
            and u"aria-label=\"' + esc(rotulo) + '\"" not in p)
     checar("a regiao viva diz o que os numeros sao, por `uiTexto`",
-           u"'%s estruturas no OAR, %s fora'.replace('%s', ests.length)" in p
+           u"'%s estruturas no STUDY, %s fora'.replace('%s', ests.length)" in p
            and u"viva.textContent = ests.length + ' / '" not in p)
     checar("o gancho do fim leva ao «Ver segmentação» e as Reconstrucoes 3D",
            u"Exercite o aprendizado em:" in p
@@ -3837,8 +3815,8 @@ def teste_a_linha_cabe_e_fala_com_o_leitor_de_tela():
     tab = dict((F.normalizar(t[0]), t) for t in F.TABELA)
     chaves = (u"já tem um RTSTRUCT na pasta", u"já segmentada",
               u"em processamento", u"parou no meio", u"livre",
-              u"tirar %s do OAR desta série", u"devolver %s ao OAR",
-              u"abrir a ajuda de %s", u"%s estruturas no OAR, %s fora",
+              u"tirar %s do STUDY desta série", u"devolver %s ao STUDY",
+              u"abrir a ajuda de %s", u"%s estruturas no STUDY, %s fora",
               u"Terminou de processar?", u"Exercite o aprendizado em:")
     sem = [k for k in chaves if not (k in tab and all(tab[k][1:]))]
     checar("e cada frase tem chave nos doze idiomas", not sem, sem)
@@ -3912,7 +3890,9 @@ rodar();
 console.log('JSON:' + JSON.stringify(CAP));
 """
     _fontes = [_fn(L.PAGINA, n) for n in (u"rodar", u"payloadDaSerie",
-                                           u"mandarParaAFila")]
+                                           u"mandarParaAFila", u"_ppsDaSerie",
+                                           u"_ppDaSerie", u"_achadosAPedir",
+                                           u"_pedirADeclaracao")]
     checar(u"as tres funcoes do pedido estao na pagina",
            all(_fontes) and _campos is not None,
            str([bool(f) for f in _fontes]))
@@ -5105,7 +5085,7 @@ def teste_a_previa_bate_com_o_que_a_execucao_grava():
         nomes_f = set(e["nome"] for e in prev_f["oar"]["estruturas"])
         rois_f = _rois_do_arquivo(os.path.join(pasta_f, grav_f[0])) \
             if grav_f else set()
-        checar(u"[fast] so o RadAI_OAR_Fast, e sem Bag_Bowel nas duas pontas",
+        checar(u"[fast] so o RadAI_STUDY_Fast, e sem Bag_Bowel nas duas pontas",
                len(grav_f) == 1 and grav_f[0].startswith(u"RS_RadAI_FAST_")
                and u"Bag_Bowel_ai" not in nomes_f
                and u"Bag_Bowel_ai" not in rois_f, str(grav_f))
@@ -5367,7 +5347,7 @@ def teste_a_serie_do_lote_manda_o_toast_do_windows():
         checar(u"o toast de SUCESSO diz a serie (…uid8), o que foi gravado e "
                u"que e sugestao nao aprovada",
                u"pronta" in titulo and uid8 and (u"…" + uid8) in texto
-               and u"RadAI_OAR + FULL" in texto and u"não aprovada" in texto,
+               and u"RadAI_STUDY + FULL" in texto and u"não aprovada" in texto,
                str((titulo, texto)))
         checar(u"  sem caminho nem a pasta do paciente",
                u"\\" not in texto and u"/" not in texto
@@ -5400,7 +5380,7 @@ def teste_a_serie_do_lote_manda_o_toast_do_windows():
                u"pela entrada do dicionario",
                _k_ok in _de and _k_tit in _de and titulo4 == _de[_k_tit]
                and texto4 == _de[_k_ok].format(
-                   str(res4.get("uid") or u"")[-8:], u"RadAI_OAR + FULL"),
+                   str(res4.get("uid") or u"")[-8:], u"RadAI_STUDY + FULL"),
                str((titulo4, texto4)))
         del chamadas[:]
         N.FALHOU[0] = False
@@ -5616,7 +5596,8 @@ def teste_as_chaves_da_tela_e_o_servidor_concordam():
     nomes = (u"_porTask", u"_arrastavel", u"tasksLigadas", u"_soAsDele",
              u"ligarProtocolo", u"ligarSelecaoLivre", u"ligarProtocolo3d",
              u"chaveDaTask", u"protocolosLigados", u"chavesFinais",
-             u"_compBloqueada", u"comparacaoDe")
+             u"_compBloqueada", u"comparacaoDe", u"_ppsDaSerie",
+             u"_ppDaSerie", u"_travadasPeloPp")
     fontes = [_corpo_js(pag, n) for n in nomes]
     checar(u"as funcoes do modelo das chaves estao na pagina", all(fontes),
            u", ".join(n for n, f in zip(nomes, fontes) if not f))
@@ -5795,8 +5776,17 @@ def teste_a_linha_da_serie_e_o_modal_do_turno_da_v83():
            corpo.startswith(u'<template id="ov_folha_corpo">')
            and corpo.rstrip().endswith(u"</template>"))
     for campo in (u'id="ov_root"', u'id="ov_mod"', u'id="ov_dias"',
-                  u'id="ov_pastas"', u'id="ov_pausar"', u'data-ov-mod="CT,MR"'):
+                  u'data-ui-fav="ov_root"', u'data-ov-mod="CT,MR"'):
         checar(u"  e leva `%s`" % campo, campo in corpo)
+    checar(u"  e nao leva mais a caixa de pausar servicos",
+           u'id="ov_pausar"' not in corpo and u"ov-servicos" not in corpo)
+    ap = _sem_comentario_js(_corpo_js(L.PAGINA, u"_ovAbrirPastas"))
+    checar(u"  e «Procurar…» abre o explorador da casca, e nao um seletor "
+           u"proprio", u"uiExplorador(" in ap and u'id="ov_pastas"' not in corpo
+           and u"/api/pastas'" not in _corpo_js(L.PAGINA, u"_ovAbrirPastas"),
+           ap[:200])
+    checar(u"  e a estrela da pasta favorita e ligada quando a folha abre",
+           u"uiFavoritaLigar(" in _corpo_js(L.PAGINA, u"folhaOvernight"))
     ini = _sem_comentario_js(_corpo_js(L.PAGINA, u"ovIniciar"))
     checar(u"«Salvar e iniciar» grava pela rota da configuracao COM a trava "
            u"do ROOT", u"fetch('/api/config'" in ini
@@ -5809,7 +5799,7 @@ def teste_a_linha_da_serie_e_o_modal_do_turno_da_v83():
            and u"n > 20" not in ini, ini[:200])
     pn = _sem_comentario_js(_corpo_js(L.PAGINA, u"_ovPorNaFila"))
     checar(u"  e o turno abre ja quando nao ha serie na frente do card",
-           u"filaOvernight(true, pausar)" in pn
+           u"filaOvernight(true)" in pn
            and u"fetch('/api/overnight/iniciar'" in pn and u"frente" in pn)
     checar(u"  e o cartao DIZ quando a recarga ainda esta pendente",
            u"OV.pendente = !!r.recarga_pendente" in pn
@@ -5832,9 +5822,9 @@ def teste_a_linha_da_serie_e_o_modal_do_turno_da_v83():
     checar(u"o cartao diz quando o card do turno FALHOU",
            u"cardTurno.estado === 'falhou'" in fp
            and u"O turno não abriu" in fp, fp[:240])
-    checar(u"o seletor de pasta da folha e o `/api/pastas` (POST) e o laudo o "
-           u"de `/api/config/testar`",
-           u"fetch('/api/pastas', {method:'POST'" in cod
+    checar(u"o seletor de pasta da folha e o explorador da casca (POST) e o "
+           u"laudo o de `/api/config/testar`",
+           u"uiExplorador(" in _corpo_js(L.PAGINA, u"_ovAbrirPastas")
            and u"fetch('/api/config/testar', {method:'POST'" in cod)
     import inspect
     import radai_panel as _pn
@@ -6538,7 +6528,8 @@ def teste_o_pericardio_nasce_ligado_no_personalizado():
 
     pag = L.PAGINA
     nomes = (u"_porTask", u"_arrastavel", u"tasksLigadas", u"chaveDaTask",
-             u"ligarSelecaoLivre", u"chavesFinais")
+             u"ligarSelecaoLivre", u"chavesFinais", u"_ppsDaSerie",
+             u"_ppDaSerie", u"_travadasPeloPp")
     fontes = [_corpo_js(pag, n) for n in nomes]
     checar(u"as funcoes das chaves estao na pagina", all(fontes))
     if not all(fontes):
@@ -6911,7 +6902,7 @@ def main():
               teste_o_modo_e_da_serie_e_chega_ao_motor,
               teste_os_niveis_cervicais_saem_pelo_rodar_agora,
               teste_o_explorador_do_passo_1,
-              teste_otimizar_a_estacao_ao_iniciar,
+              teste_o_otimizar_saiu_do_lote,
               teste_o_andamento_vai_para_o_card_que_roda,
               teste_a_conferencia_soma_os_modos_das_series,
               teste_a_regua_de_cpu_tem_uma_fonte_so,

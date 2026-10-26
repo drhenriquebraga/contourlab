@@ -258,29 +258,50 @@ def resolver_pasta(s):
 MODALIDADES_DA_TELA = ("CT", "MR")
 
 
+def pulada_no_lote(nome):
+    return nome == "_RadAI" or nome.lower() in PASTAS_DE_SISTEMA
+
+
+def ler_pasta_do_lote(achados, zips, raiz, arquivos, modalidades=("CT",),
+                      incluir_zips=False, teto=500, parar=None, ao_ler=None):
+    vistos = 0
+    for nome in arquivos:
+        if parar is not None and parar():
+            break
+        fp = os.path.join(raiz, nome)
+        if incluir_zips and nome.lower().endswith(".zip"):
+            zips.append(fp)
+            continue
+        vistos += 1
+        if ao_ler is not None:
+            ao_ler()
+        _juntar(achados, _cabecalho(fp), raiz, modalidades=modalidades)
+        if len(achados) > teto:
+            break
+    return vistos
+
+
 def varrer(pasta, modalidades=("CT",), min_cortes=20, teto=500, marcadores=None,
            incluir_zips=False, descartadas=None):
     achados = {}
     zips = []
     vistos = 0
     for raiz, dirs, arquivos in os.walk(str(pasta)):
-        dirs[:] = [d for d in dirs
-                   if d != "_RadAI" and d.lower() not in PASTAS_DE_SISTEMA]
-        for nome in arquivos:
-            fp = os.path.join(raiz, nome)
-            if incluir_zips and nome.lower().endswith(".zip"):
-                zips.append(fp)
-                continue
-            vistos += 1
-            _juntar(achados, _cabecalho(fp), raiz, modalidades=modalidades)
-            if len(achados) > teto:
-                break
+        dirs[:] = [d for d in dirs if not pulada_no_lote(d)]
+        vistos += ler_pasta_do_lote(achados, zips, raiz, arquivos, modalidades,
+                                    incluir_zips, teto)
         if vistos > TETO_ARQUIVOS:
             print("[varrer] parei em %d arquivos vistos em %s - o teto "
                   "e %d. Aponte a pasta do exame, e nao a raiz do disco."
                   % (vistos, pasta, TETO_ARQUIVOS))
             break
+    return fechar_varredura_do_lote(achados, zips, modalidades, min_cortes,
+                                    teto, marcadores, descartadas)
 
+
+def fechar_varredura_do_lote(achados, zips, modalidades=("CT",), min_cortes=20,
+                             teto=500, marcadores=None, descartadas=None,
+                             parar=None):
     fora = [s for s in achados.values() if s["cortes"] >= min_cortes]
     if descartadas is not None:
         for s in achados.values():
@@ -294,6 +315,8 @@ def varrer(pasta, modalidades=("CT",), min_cortes=20, teto=500, marcadores=None,
         s.update(_situacao(s, marcadores))
 
     for z in zips:
+        if parar is not None and parar():
+            break
         dentro, erro = espiar_zip(z, teto=teto, modalidades=modalidades)
         if erro:
             continue
@@ -315,6 +338,72 @@ def varrer(pasta, modalidades=("CT",), min_cortes=20, teto=500, marcadores=None,
         for x in fora:
             x.setdefault("radai_na_pasta", [])
     return sorted(fora, key=lambda s: (s["pid"], s["date"], s["uid"]))
+
+
+TETO_SERIES_DA_TELA = 500
+
+
+def _lote_iniciar(job):
+    alvo = job["pasta"]
+    if alvo.lower().endswith(".zip") and os.path.isfile(alvo):
+        alvo, erro = preparar_zip(alvo)
+        if erro:
+            job["erro"] = erro
+            return
+    job["raiz"] = alvo
+    job["dados"] = {"achados": {}, "zips": [],
+                    "piso": int(_CFG.get("min_cortes", 20))}
+
+
+def _lote_ler(job, pasta, nomes):
+    import radai_varrer
+    d = job["dados"]
+    return ler_pasta_do_lote(
+        d["achados"], d["zips"], pasta, nomes, MODALIDADES_DA_TELA, True,
+        TETO_SERIES_DA_TELA, parar=lambda: job["parado"],
+        ao_ler=lambda: radai_varrer.contar_arquivo(job)) > 0
+
+
+def _lote_linhas(job):
+    piso = job["dados"]["piso"]
+    return [{"curto": s["uid"][-8:], "desc": s.get("desc") or u"",
+             "modalidade": s.get("modalidade") or u"",
+             "cortes": s.get("cortes") or 0, "date": s.get("date") or u""}
+            for s in list(job["dados"]["achados"].values())
+            if s.get("cortes", 0) >= piso]
+
+
+def _lote_fechar(job):
+    d = job["dados"]
+    curtas = []
+    series = fechar_varredura_do_lote(
+        d["achados"], d["zips"], MODALIDADES_DA_TELA, d["piso"],
+        TETO_SERIES_DA_TELA, _CFG.get("marcadores"), curtas,
+        parar=lambda: job["parado"])
+    r = completar_da_tela(series, job["raiz"], d["piso"], curtas)
+    return r.pop("series"), r
+
+
+def completar_da_tela(series, alvo, piso, curtas):
+    estudos = set(s.get("estudo") or s.get("pid") or "" for s in series)
+    um_exame = len(estudos) == 1 and len(series) > 1
+    try:
+        import radai_triage
+        series = radai_triage.escolher_para_contorno(series)
+    except Exception:
+        pass
+    try:
+        import radai_dicom as _rd
+        for _s in series:
+            _s["espessura_laudo"] = _rd.laudo_de_espessura(
+                _s.get("espessura_mm"))
+    except Exception:
+        pass
+    _com_bilhete(series)
+    return {"series": series, "pasta": alvo, "um_exame": um_exame,
+            "piso": piso,
+            "curtas": sorted((c["cortes"] for c in curtas),
+                             reverse=True)[:20]}
 
 
 def _fixar_espessura(s):
@@ -404,11 +493,16 @@ def escolha_da_serie(serie):
     modo = md.normalizar_modo(s.get("modo"))
     e = {"modo": modo, "modalidade": mod, "protocolos": (), "tasks": {},
          "comparacao": normalizar_comparacao({}, mod), "oar_fora": (),
-         "protocolos_3d": ()}
+         "protocolos_3d": (), "protocolo_proprio": u"",
+         "achado_declarado": False}
     if modo != md.MODO_PERSO:
         return e
-    e["protocolos"] = tuple(md.normalizar_protocolos(s.get("protocolos"),
-                                                      mod))
+    e["protocolo_proprio"] = str(s.get("protocolo_proprio") or u"")[:64]
+    # GUARDA: so o `true` literal: a tela so o manda depois da confirmacao.
+    e["achado_declarado"] = s.get("achado_declarado") is True
+    e["protocolos"] = (() if e["protocolo_proprio"] else
+                       tuple(md.normalizar_protocolos(s.get("protocolos"),
+                                                      mod)))
     e["protocolos_3d"] = tuple(md.normalizar_protocolos_3d(
         s.get("protocolos_3d"), mod))
     e["tasks"] = dict(md.normalizar_chaves(s.get("tasks")))
@@ -447,11 +541,52 @@ def _chaves_de_task(escolha):
                 and t not in CHAVES_DOS_MOTORES_DO_FULL)
 
 
+def protocolo_proprio_da_escolha(escolha, log=None):
+    ident = (escolha or {}).get("protocolo_proprio")
+    if not ident:
+        return None
+    try:
+        import radai_sets as _rs
+        p = _rs.protocolo_proprio(ident, (escolha or {}).get("modalidade")
+                                  or "CT")
+    except Exception:
+        p = None
+    if p is None and log:
+        log(u"ALERTA: o protocolo proprio %s nao existe nesta estacao para "
+            u"esta modalidade: o STUDY sai pela lista padrao" % ident)
+    return p
+
+
+def tasks_do_protocolo_proprio(escolha, achados=()):
+    p = protocolo_proprio_da_escolha(escolha)
+    if p is None:
+        return (), ()
+    import radai_sets as _rs
+    ts = _rs.tasks_do_protocolo(p)
+    ach = set(achados or ())
+    return (tuple(t for t in ts if t not in ach),
+            tuple(t for t in ts if t in ach))
+
+
 def tasks_do_perso(escolha, permitidas=None, achados=(), catalogo=None):
-    return tuple(_md().tasks_do_personalizado(
+    md = _md()
+    fora = list(md.tasks_do_personalizado(
         escolha.get("protocolos") or (), _chaves_de_task(escolha),
         escolha.get("modalidade") or "CT", permitidas=permitidas,
         achados=achados, catalogo=catalogo))
+    anat, de_achado = tasks_do_protocolo_proprio(escolha, achados)
+    md.conferir_regra_a(md.PROTOCOLO, anat, achados)
+    # GUARDA: o achado do protocolo proprio roda so declarado nesta execucao.
+    extra = list(anat) + (list(de_achado) if escolha.get("achado_declarado")
+                          else [])
+    if extra:
+        extra = list(md._filtrar(extra, md._modalidade(
+            escolha.get("modalidade") or "CT"), permitidas, catalogo))
+        md.conferir_regra_a(md.MARCADO, extra, ())
+    for t in extra:
+        if t not in fora:
+            fora.append(t)
+    return tuple(fora)
 
 
 def motores_do_perso(escolha, com_estudo=True):
@@ -475,6 +610,12 @@ def motores_do_perso(escolha, com_estudo=True):
         if c in chaves:
             liga = bool(chaves[c])
         fora[c] = bool(liga) and md._modalidade(mod) == "CT"
+    _pp = protocolo_proprio_da_escolha(escolha)
+    if _pp is not None and md._modalidade(mod) == "CT":
+        import radai_sets as _rs
+        for c in _rs.motores_do_protocolo(_pp):
+            if c in fora:
+                fora[c] = True
     return fora
 
 
@@ -530,6 +671,19 @@ def tasks_iniciais(serie, lista_explicita=None, log=None):
             protocolos_3d=e.get("protocolos_3d") or ())
         if _fr_per:
             log(_fr_per)
+        _pp = protocolo_proprio_da_escolha(e, log=log)
+        if _pp is not None:
+            _anat, _ach = tasks_do_protocolo_proprio(e, achados)
+            log(u"protocolo proprio «%s»: tasks %s"
+                % (_pp.get("nome") or e["protocolo_proprio"],
+                   u", ".join(_anat) or u"so a base"))
+            if _ach and e.get("achado_declarado"):
+                log(u"ACHADO: %s declarado no protocolo proprio «%s» nesta "
+                    u"execucao" % (u", ".join(_ach), _pp.get("nome") or u"?"))
+            elif _ach:
+                log(u"ACHADO do protocolo proprio «%s» (%s) NAO roda: a "
+                    u"deteccao nao foi declarada nesta execucao"
+                    % (_pp.get("nome") or u"?", u", ".join(_ach)))
     if e["protocolos_3d"]:
         est = md.tasks_do_estudo_3d(e["protocolos_3d"], mod,
                                     permitidas=permitidas, achados=achados,
@@ -644,9 +798,15 @@ def _com_escolhas_da_tela(corpo):
                 d["protocolos_3d"] = list(e["protocolos_3d"])
             else:
                 d.pop("protocolos_3d", None)
+            for k in ("protocolo_proprio", "achado_declarado"):
+                if e[k]:
+                    d[k] = e[k]
+                else:
+                    d.pop(k, None)
         else:
             for k in ("protocolos", "tasks", "comparacao", "oar_fora",
-                      "protocolos_3d"):
+                      "protocolos_3d", "protocolo_proprio",
+                      "achado_declarado"):
                 d.pop(k, None)
         if legado:
             d["legado_v82"] = sorted(legado)
@@ -674,20 +834,20 @@ AJUDA_DOS_MODOS = (u"FAST e AUTO decidem sozinhos, pela anatomia que a base "
                    u"Nenhum modo roda ACHADO sem a chave da própria task.")
 MODOS_DA_TELA = (
     {"cod": "fast", "rotulo": u"FAST",
-     "ajuda": (u"Só o que o OAR precisa, o mais rápido: a base e, no tórax, "
+     "ajuda": (u"Só o que o STUDY precisa, o mais rápido: a base e, no tórax, "
                u"as cavidades, a mama e o derrame (o pericárdico entra no "
                u"coração, e o pleural sai dos pulmões). Grava só o "
-               u"RadAI_OAR_Fast, com os pontos de cada contorno reduzidos "
+               u"RadAI_STUDY_Fast, com os pontos de cada contorno reduzidos "
                u"— sem FULL, sem TS cru, sem plugins e sem comparação.")},
     {"cod": "auto", "rotulo": u"AUTO",
      "ajuda": (u"O que a anatomia pede: a base roda primeiro, mede as regiões "
                u"do corpo na série e roda as tasks que completam o FULL "
                u"naquela região, e os níveis cervicais quando o pescoço "
-               u"aparece. Grava o FULL e o RadAI_OAR. É o que o vigia roda "
+               u"aparece. Grava o FULL e o RadAI_STUDY. É o que o vigia roda "
                u"toda noite.")},
     {"cod": "perso", "rotulo": u"PERSONALIZADO",
      "ajuda": (u"Você escolhe: protocolos, task a task e a comparação com "
-               u"outros modelos. Grava o FULL, o RadAI_OAR (menos o que você "
+               u"outros modelos. Grava o FULL, o RadAI_STUDY (menos o que você "
                u"tirar com o «x»), um arquivo por plugin pedido e, se "
                u"ligados, o TS cru e os modelos de comparação.")},
 )
@@ -696,7 +856,7 @@ COMPARACAO_DA_TELA = (
     {"cod": "ts", "rotulo": u"TS cru (não corrigido)", "modelo": None,
      "so_tc": False,
      "ajuda": (u"A saída do TotalSegmentator como ela é, sem nenhum "
-               u"pós-processamento nosso, num arquivo próprio (STUDY_ts). É "
+               u"pós-processamento nosso, num arquivo próprio (RadAI_TS). É "
                u"a linha de base para comparar com o FULL.")},
     {"cod": "nv", "rotulo": u"NV-Segment-CT", "modelo": "nv_segment_ct",
      "so_tc": True, "ajuda": None},
@@ -839,7 +999,7 @@ def _item_dos_niveis(modalidade="CT"):
             "modelo": {"nome": u"níveis cervicais (Weissmann et al. 2023)",
                        "versao": None, "task": "hnlnl"},
             "avisos": [u"só sai com a cabeça no campo; os níveis entram no "
-                       u"FULL, e no OAR só a união e as parótidas do nível "
+                       u"FULL, e no STUDY só a união e as parótidas do nível "
                        u"VIII"],
             "protocolos": protos, "arrasta": [],
             "velocidade": None, "velocidade_rotulo": u"", "ficha": [],
@@ -861,7 +1021,7 @@ MODELO_DOS_MOTORES_DO_FULL = {
 }
 AVISO_DOS_MOTORES_DO_FULL = {
     "cranio_ct": u"só sai com o encéfalo no campo; tronco e quiasma vão também "
-                 u"ao OAR",
+                 u"ao STUDY",
 }
 
 
@@ -1033,7 +1193,39 @@ def opcoes_da_tela(modalidade="CT"):
                           for p in md.protocolos_3d_de(mod)],
         "velocidades": _vels,
         "chave_dos_niveis": CHAVE_DOS_NIVEIS,
+        "protocolos_proprios": protocolos_proprios_da_tela(mod),
     }
+
+
+def protocolos_proprios_da_tela(modalidade="CT"):
+    md = _md()
+    mod = md._modalidade(modalidade)
+    try:
+        import radai_config as _c
+        import radai_sets as _rs
+        lista = list(_c.protocolos_proprios(mod) or ())
+    except Exception:
+        return []
+    _perm, achados = _achados_e_permitidas()
+    fora = []
+    for p in lista:
+        p = dict(p or {})
+        if not p.get("id") or md._modalidade(p.get("modalidade")) != mod:
+            continue
+        try:
+            ts = _rs.tasks_do_protocolo(p)
+            mot = _rs.motores_do_protocolo(p)
+        except Exception:
+            continue
+        ach = [t for t in ts if t in set(achados or ())]
+        fora.append({"id": (u"%s" % p["id"])[:64],
+                     "nome": u"%s" % (p.get("nome") or p["id"]),
+                     "tasks": [t for t in ts if t not in ach],
+                     "motores": list(mot), "achados": ach,
+                     "tem_achado": bool(ach),
+                     "n_estruturas": len(p.get("estruturas") or ()),
+                     "n_unioes": len(p.get("merges") or ())})
+    return fora
 
 
 POR_QUE_A_BASE_RODA_SEMPRE = (
@@ -1229,6 +1421,9 @@ def estruturas_do_oar_possiveis(modo, tasks, modalidade="CT", torax=None,
         if (regioes is not None and "cabeca_pescoco" not in set(regioes)
                 and so_com_o_pescoco(k, rodam, engine)):
             continue
+        if k in (getattr(engine, "FORA_DO_OAR_NA_MODALIDADE", None)
+                 or {}).get(mod, ()):
+            continue
         possiveis.append(k)
     _subst = dict(getattr(_rs, "MESMA_ROI_NO_OAR", None) or {})
     possiveis = [k for k in possiveis
@@ -1314,6 +1509,43 @@ def arquivos_da_escolha(serie, tasks=(), motores=None):
     return fora
 
 
+def estruturas_do_protocolo_na_previa(protocolo, oar_fora=()):
+    import radai_sets as _rs
+    try:
+        import engine
+        _nome = engine.nome_clinico
+    except Exception:
+        _nome = lambda k: k
+    sel = _rs.selecao_do_protocolo(protocolo)
+    tiradas = set(oar_fora or ())
+    ests, fora = [], []
+    for k in sel["chaves"]:
+        it = {"chave": k, "nome": _nome(k), "construcao": False}
+        (fora if k in tiradas else ests).append(it)
+    for u in sel["unioes"]:
+        ests.append({"chave": u"uniao:%s" % u["nome"], "nome": u["nome"],
+                     "construcao": True, "uniao": True,
+                     "de": [_nome(k) for k in u["de"]]})
+    return ests, fora
+
+
+def _com_os_nomes_proprios(ests, fora):
+    import radai_sets as _rs
+    proprios = _rs.nomes_proprios_em_vigor()
+    if not proprios:
+        return ests, fora
+    todos = list(ests) + list(fora)
+    aceitos, _r = _rs.validar_nomes_proprios(
+        proprios, [x["nome"] for x in todos if not x.get("uniao")],
+        outros=[x["nome"] for x in todos if x.get("uniao")])
+
+    def _troca(x):
+        if x.get("uniao") or x["nome"] not in aceitos:
+            return x
+        return dict(x, nome=aceitos[x["nome"]], nome_padrao=x["nome"])
+    return [_troca(x) for x in ests], [_troca(x) for x in fora]
+
+
 def previa_da_entrega(serie):
     md = _md()
     s = dict(serie or {})
@@ -1351,6 +1583,10 @@ def previa_da_entrega(serie):
     _ja = set(x["chave"] for x in ests)
     ests = ests + [x for x in estruturas_dos_motores_no_oar(
         e["modo"], mod, mot, e["oar_fora"]) if x["chave"] not in _ja]
+    _pp = protocolo_proprio_da_escolha(e)
+    if _pp is not None:
+        ests, fora = estruturas_do_protocolo_na_previa(_pp, e["oar_fora"])
+    ests, fora = _com_os_nomes_proprios(ests, fora)
     arq_oar = next((a for a in arquivos if a.get("entregue")), None)
     anat = e["modo"] != md.MODO_PERSO
     return {"modo": e["modo"], "modalidade": mod,
@@ -2670,7 +2906,7 @@ def _trava_do_lote():
 
 MOTIVO_DOS_NIVEIS_FORA_DO_MODO = {
     "fast": u"o FAST nao roda os niveis cervicais: ele grava so o "
-            u"RadAI_OAR_Fast, e os niveis vao ao FULL, que o FAST nao monta",
+            u"RadAI_STUDY_Fast, e os niveis vao ao FULL, que o FAST nao monta",
     "lista": u"a lista do chamador nao pede os niveis cervicais",
 }
 
@@ -3205,7 +3441,7 @@ def _uma_serie(s, incluir_nv, tasks, device, python_exe,
             if (_origem in (_md.MODO_AUTO, _md.MODO_FAST)
                     and _niveis.get("motivo")):
                 log("niveis cervicais: %s — %s"
-                    % (u"rodam (vao para o FULL, nunca para o OAR)"
+                    % (u"rodam (vao para o FULL, nunca para o STUDY)"
                        if _niveis["rodam"] else u"nao rodam",
                        _niveis["motivo"]))
 
@@ -3303,8 +3539,8 @@ def _uma_serie(s, incluir_nv, tasks, device, python_exe,
             engine, stage, s["pasta"], rs_name, tasks=tasks,
             versao="lote " + VERSAO_LOTE, suavizar_mm=suavizar_mm,
             log=log, grade=_grade, modalidade=_mod_serie)
-        _passo("montando o OAR_Fast" if _origem == _md.MODO_FAST
-               else "montando o FULL e o OAR", rotulo)
+        _passo("montando o STUDY_Fast" if _origem == _md.MODO_FAST
+               else "montando o FULL e o STUDY", rotulo)
         _torax = torax_pedido(s)
         if _torax and log:
             log("protocolo Torax / Mama pedido nesta serie: a parede toracica "
@@ -3320,12 +3556,15 @@ def _uma_serie(s, incluir_nv, tasks, device, python_exe,
         if log and _so_estudo:
             log("estudo 3D: %s so no mapa de rotulos, fora do entregue"
                 % ", ".join(_so_estudo))
+        _pp_da_vez = protocolo_proprio_da_escolha(_esc)
         entrega = sd.full_e_oar(cruas_ent, volume_hu=_hu, cads=cads_da_vez,
                                 cervicais=(None if _hnl_so_estudo
                                            else (hnl_da_vez or None)),
                                 torax=_torax, modo=_modo_da_saida,
                                 oar_fora=list(_esc["oar_fora"]) or None,
-                                extras=extras_da_vez) or {}
+                                extras=extras_da_vez,
+                                **({"protocolo": _pp_da_vez}
+                                   if _pp_da_vez is not None else {})) or {}
         if isinstance(entrega.get("parcial"), dict):
             _parcial_da_entrega.update(entrega["parcial"])
         _passos_do_full = list(entrega.get("etapas") or [])
@@ -3848,16 +4087,21 @@ def _abrir_ct(pasta, uid):
     import SimpleITK as sitk
     import numpy as np
     import engine
-    arquivos = _so_da_serie(
-        [os.path.join(pasta, f) for f in sorted(os.listdir(pasta))
-         if os.path.isfile(os.path.join(pasta, f))], uid)
+    todos = [os.path.join(pasta, f) for f in sorted(os.listdir(pasta))
+             if os.path.isfile(os.path.join(pasta, f))]
+    arquivos = _so_da_serie(todos, uid,
+                            _modalidade_lida_dos_cortes(todos, uid) or "CT")
     if len(arquivos) < 3:
         raise ValueError("nao achei cortes da serie em %s" % pasta)
     stage = tempfile.mkdtemp(prefix="radai_prev_")
     try:
         engine.copy_sorted(arquivos, stage)
         img = engine.load_sitk(stage)
-        return sitk.GetArrayFromImage(img).astype(np.int16, copy=False), img
+        a = sitk.GetArrayFromImage(img)
+        if a.dtype != np.int16 and a.size and (a.max() > 32767
+                                               or a.min() < -32768):
+            a = np.clip(a, -32768, 32767)
+        return a.astype(np.int16, copy=False), img
     finally:
         shutil.rmtree(stage, ignore_errors=True)
 
@@ -3893,29 +4137,9 @@ letter-spacing:.5px;font-family:var(--font-mono)}
 
 .tab-rola{overflow-x:auto;-webkit-overflow-scrolling:touch}
 
-.ov-escolha{display:flex;align-items:flex-start;gap:10px;margin:14px 0 4px;
- padding:11px 13px;border-radius:var(--r-md,6px);
- text-transform:none;letter-spacing:normal;font-size:13px;
- color:var(--text-muted,#a3b1c6);font-family:inherit;
- background:var(--panel-2,#0f1729);border:1px solid var(--line,#1e293b)}
-.ov-escolha:hover{border-color:var(--accent-line,#2a3d57)}
-.ov-escolha input{margin:2px 0 0;width:16px;height:16px;flex:0 0 auto;
- accent-color:var(--ok,#12873F);cursor:pointer}
-.ov-escolha b{color:var(--text,#e6edf7);font-weight:600}
-.ov-escolha .ov-sub{color:var(--text-dim,#72829b);font-size:12px}
-.ov-escolha-rot{display:flex;align-items:flex-start;gap:10px;flex:1 1 auto;
- min-width:0;margin:0;cursor:pointer;font:inherit;color:inherit;
- text-transform:none;letter-spacing:normal}
-.ov-escolha{flex-wrap:wrap}
-.ov-escolha .ov-ajuda{margin:1px 0 0;padding:0;background:transparent;cursor:pointer}
-.ov-escolha .ov-ajuda[aria-expanded="true"]{border-color:var(--accent);color:var(--accent)}
-.ov-detalhe{flex:1 0 100%;margin:4px 0 0 26px;padding:10px 0 0;
- border-top:1px solid var(--line);font-size:12px;line-height:1.55;
- color:var(--text-muted)}
-.ov-detalhe[hidden]{display:none}
-.ov-detalhe p{margin:0 0 8px}
-.ov-detalhe .ov-servicos{margin:8px 0 0}
-.ov-detalhe .ov-nota{margin:10px 0 0}
+.ov-frota-aviso{margin:14px 0 0;font-size:12px;line-height:1.55;
+ color:var(--text-dim,#72829b)}
+.ov-frota-aviso[hidden]{display:none}
 .ov-frota:empty{display:none}
 .ov-form .rc-fronteira{margin-top:16px}
 
@@ -3929,16 +4153,6 @@ letter-spacing:.5px;font-family:var(--font-mono)}
  color:var(--text-dim,#72829b)}
 .ov-chip b{color:var(--text,#e6edf7);font:600 13px/1 var(--font-display,inherit);
  font-variant-numeric:tabular-nums}
-.ov-servicos{margin:12px 0 0;padding:0 0 0 18px;font-size:12.5px;
- line-height:1.55;color:var(--text-dim,#72829b)}
-.ov-servicos li{margin:0 0 7px}
-.ov-servicos b{color:var(--text-muted,#a3b1c6);font-weight:600}
-.ov-servicos span[data-radai-frase]::before{content:'— ';
- color:var(--text-dim,#72829b)}
-.ov-nota{margin:14px 0 2px;padding:10px 12px;font-size:12.5px;line-height:1.55;
- border-radius:var(--r-md,6px);background:var(--fundo-ok,#0d1a12);
- border:1px solid var(--borda-ok,#24422f);color:var(--text-muted,#a3b1c6)}
-.ov-nota b{color:var(--success,#5BC57F)}
 .ov-form button{margin:0}
 .ov-campo{margin:14px 0 0}
 .ov-rot{display:block;margin:0 0 6px;font:600 10.5px/1.3 var(--font-mono);
@@ -3950,20 +4164,6 @@ letter-spacing:.5px;font-family:var(--font-mono)}
 .ov-laudo.ok{color:var(--success)}
 .ov-laudo.ruim{color:var(--error)}
 .ov-laudo.aviso{color:var(--warn)}
-.ov-pastas{margin:8px 0 0;padding:6px;border:1px solid var(--line);
- border-radius:var(--r-md);background:var(--bg-1)}
-.ov-pastas[hidden]{display:none}
-.ov-p-nav{display:flex;align-items:center;gap:6px;margin:0 0 6px}
-.ov-p-nav code{flex:1 1 auto;min-width:0;overflow:hidden;
- text-overflow:ellipsis;white-space:nowrap;font:400 11px/1.3 var(--font-mono);
- color:var(--text-muted)}
-.ov-p-lista{max-height:180px;overflow:auto;display:flex;flex-direction:column}
-.ov-p-item{display:flex;align-items:center;gap:7px;padding:6px 8px;
- border:0;border-radius:5px;background:transparent;text-align:left;
- color:var(--text-muted);font:400 12.5px/1.3 var(--font-display);cursor:pointer}
-.ov-p-item:hover,.ov-p-item:focus-visible{background:var(--panel-2);
- color:var(--text);outline:0}
-.ov-p-vazio{margin:4px 6px;font-size:11.5px;color:var(--text-dim)}
 .ov-dois{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}
 .ov-seg{display:inline-flex;border:1px solid var(--line-strong);
  border-radius:var(--r-md);overflow:hidden}
@@ -4006,57 +4206,16 @@ letter-spacing:.5px;font-family:var(--font-mono)}
 .rc-card.ligado{border-color:var(--accent);background:var(--accent-soft)}
 .rc-card.ligado .rc-card-ic{background:var(--accent);color:var(--bg-0)}
 
-#fp .fp-topo{display:flex;align-items:center;gap:10px;margin:0 0 10px}
-#fp .fp-topo h2{margin:0;flex:1 1 auto}
-#fp .fp-topo button{margin:0}
-#fp .fp-nav{display:flex;align-items:center;gap:6px;margin:0 0 10px}
-#fp .fp-nav .fp-cam{flex:1 1 auto;min-width:0}
-#fp .fp-nav input{width:100%}
-#fp .fp-nav button{flex:0 0 auto;min-width:30px;margin:0}
-#fp .fp-nav button:disabled{opacity:.35;cursor:default}
-#fp .fp-corpo{display:grid;grid-template-columns:220px minmax(0,1fr);gap:12px;
- min-height:0}
-#fp .fp-lado{border:1px solid var(--line);border-radius:var(--r-md);
- background:var(--bg-1);padding:6px;max-height:420px;overflow:auto}
-#fp .fp-sec{font:600 10px/1.4 var(--font-mono);letter-spacing:.5px;
- text-transform:uppercase;color:var(--text-dim);padding:4px 6px 6px}
-#fp .fp-no{display:flex;align-items:center;gap:2px;border-radius:5px;
- font-size:12px;color:var(--text-muted);min-height:26px}
-#fp .fp-no.atual{background:var(--accent-soft);color:var(--text)}
-#fp .fp-tg{background:none;border:0;color:var(--text-dim);width:20px;
- height:22px;padding:0;margin:0;font-size:10px;cursor:pointer;flex:0 0 auto}
-#fp .fp-tg:hover{color:var(--accent)}
-#fp .fp-tg[disabled]{visibility:hidden}
-#fp .fp-nm{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;
- white-space:nowrap;cursor:pointer;padding:3px 4px;border-radius:4px}
-#fp .fp-nm:hover{color:var(--text)}
-#fp .fp-tipo{font:400 9.5px/1 var(--font-mono);color:var(--text-dim);
- margin-left:6px;text-transform:uppercase;letter-spacing:.4px}
-#fp .fp-filhos{padding-left:14px}
-#fp .fp-dir{min-width:0;display:flex;flex-direction:column}
-#fp .fp-ferr{display:flex;align-items:center;gap:8px;margin:0 0 8px;
- flex-wrap:wrap}
-#fp .fp-ferr input{flex:1 1 180px;min-width:0}
-#fp .fp-ord{display:inline-flex;border:1px solid var(--line-strong);
- border-radius:var(--r-md);overflow:hidden;flex:0 0 auto}
-#fp .fp-ord button{margin:0;border:0;border-radius:0;padding:7px 11px;
- font-size:12px;background:var(--panel-2);color:var(--text-muted)}
-#fp .fp-ord button + button{border-left:1px solid var(--line-strong)}
-#fp .fp-ord button[aria-pressed="true"]{background:var(--accent-soft);
- color:var(--text)}
-#fp .fp-ord button[data-sentido="asc"]::after{content:" ▲";font-size:9px}
-#fp .fp-ord button[data-sentido="desc"]::after{content:" ▼";font-size:9px}
-#fp .fp-cab{display:grid;grid-template-columns:minmax(0,1fr) 128px;gap:8px;
- padding:5px 10px;font:600 10px/1.4 var(--font-mono);letter-spacing:.4px;
- text-transform:uppercase;color:var(--text-dim);border-bottom:1px solid var(--line)}
-#fp .fp-pe{display:flex;align-items:center;gap:8px;margin-top:12px;flex-wrap:wrap}
-#fp .fp-pe .fp-esp{flex:1 1 auto}
-#fp .fp-pe button{margin:0}
-@media (max-width:640px){
- #fp .fp-corpo{grid-template-columns:1fr}
- #fp .fp-lado{max-height:150px}
- #fp .fp-cab{grid-template-columns:minmax(0,1fr) 104px}
-}
+.lt-filtro{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:10px 0 0}
+#lt_ler[hidden],#lt_form[hidden]{display:none}
+.lt-ler-bts{display:flex;justify-content:center;gap:8px;margin:12px 0 0}
+.lt-dica{margin:10px 0 0;text-align:center;font-size:12px;color:var(--text-dim)}
+#lt_ler.feito .lt-dica,#lt_ler.feito .lt-ler-bts{visibility:hidden}
+.lt-ler-bts button{margin:0}
+.lt-fora{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:8px 0 0;
+ font-size:12.5px;color:var(--text-muted)}
+.lt-fora:empty{display:none}
+.lt-fora button{margin:0}
 
 .cart-cx{display:flex;align-items:center;gap:10px;margin:14px 0 0;
  padding:10px 12px;border-radius:var(--r-md);font-size:12.5px;
@@ -4237,24 +4396,6 @@ font-family:var(--font-mono)}
 #lt_achou{margin:0 0 10px}
 #lt_achou:empty{display:none}
 #lt_achou .lt-conta{font-size:12.5px;color:var(--success,#5BC57F)}
-#fundo{display:none;position:fixed;inset:0;background:rgba(2,6,14,.78);z-index:5300}
-#fp{display:none;position:fixed;z-index:5310;left:50%;top:50%;transform:translate(-50%,-50%);
-width:min(940px,96vw);max-height:94vh;overflow:auto;background:var(--panel);
-border:1px solid var(--accent);border-radius:var(--r-xl);padding:16px;
-box-sizing:border-box}
-.fp_item{display:grid;grid-template-columns:minmax(0,1fr) 128px;gap:8px;
- align-items:center;padding:6px 10px;border-radius:6px;cursor:pointer;
- font-size:12.5px;color:var(--text-muted)}
-.fp_item .fp-n{display:flex;align-items:center;gap:7px;min-width:0;
- overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.fp_item .fp-d{font:400 11.5px/1.3 var(--font-mono);color:var(--text-dim);
- font-variant-numeric:tabular-nums}
-.fp_item:hover,.fp_item:focus-visible{background:var(--panel-2);color:var(--text);
- outline:0}
-.fp_item.vazio{cursor:default;display:block;color:var(--text-dim)}
-@media (max-width:640px){.fp_item{grid-template-columns:minmax(0,1fr) 104px}}
-#fp_lista{max-height:360px;overflow:auto;border:1px solid var(--line);
-border-top:0;border-radius:0 0 var(--r-md) var(--r-md);padding:4px}
 .aviso{background:var(--panel-2);border:1px solid var(--accent-line);
 border-radius:var(--r-md);padding:11px 13px;font-size:12px;color:var(--text-muted);
 line-height:1.55;margin-top:10px}
@@ -4367,6 +4508,12 @@ td.serie{width:76px;padding-top:4px !important;padding-bottom:4px !important}
 .p4-rt3d{margin:8px 0 4px;padding:8px 10px;border-radius:var(--r-md);
  background:var(--panel-2);border:1px solid var(--line);font-size:12.5px;
  line-height:1.5;color:var(--text)}
+.p4 select.p4-pp-sel{margin:4px 0 2px;font-size:12px}
+.p4 select.p4-pp-sel:disabled{opacity:.55;cursor:not-allowed}
+.p4-pp-nota{display:flex;align-items:baseline;gap:7px;margin:8px 0 2px;
+ font-size:11.5px;line-height:1.45;color:var(--text-muted)}
+.oar-tag.uniao{color:var(--text);background:var(--panel-2);
+ border-color:var(--line-strong)}
 #tab.p4-estreito .p4{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
 @media (max-width:640px){#tab.p4-estreito .p4{grid-template-columns:minmax(0,1fr)}}
 .tk-trava{margin:0 0 10px;padding:8px 10px;border-radius:var(--r-md);
@@ -4402,7 +4549,7 @@ td.serie{width:76px;padding-top:4px !important;padding-bottom:4px !important}
 <div class="ps-cx fechado" id="cx2">
  <h2 class="ps-cab" data-cx="cx2"><span class="ps-num">2</span>
   <span id="cx2_tit" data-radai-frase>Séries encontradas</span><span class="ps-sub" id="cx2_n"></span>
-  <span class="ui-ajuda" tabindex="0" aria-label="ajuda">?<span class="ui-balao"><p>A coordenação é a mesma do vigia: enquanto uma série processa, ela fica marcada como em processamento para todas as estações, e ao terminar fica concluída — o lote da madrugada não vai refazê-la.</p><p>Série travada por outra estação não pode ser incluída aqui; série já concluída não vem marcada. Reprocessar <b>substitui</b>: os RTSTRUCT RadAI que estiverem na pasta são apagados e os novos entram no lugar — a tela pergunta antes. O exame, e contorno que outra pessoa tenha posto ali, não são tocados.</p></span></span><span class="ps-seta">&#9662;</span></h2>
+  <span class="ui-ajuda" tabindex="0" aria-label="ajuda">?<span class="ui-balao"><p>A coordenação é a mesma do vigia: enquanto uma série processa, ela fica marcada como em processamento para todas as estações, e ao terminar fica concluída — o lote da madrugada não vai refazê-la.</p><p>Série travada por outra estação não pode ser selecionada aqui; série já concluída não vem marcada. Reprocessar <b>substitui</b>: os RTSTRUCT RadAI que estiverem na pasta são apagados e os novos entram no lugar — a tela pergunta antes. O exame, e contorno que outra pessoa tenha posto ali, não são tocados.</p></span></span><span class="ps-seta">&#9662;</span></h2>
  <div class="ps-corpo">
  <div id="lt_achou" role="status"></div>
  <div class="tab-rola"><table id="tab"></table></div>
@@ -4428,53 +4575,7 @@ td.serie{width:76px;padding-top:4px !important;padding-bottom:4px !important}
 
 @ALERTA@
 
-<div id="fundo" onclick="fpFechar()"></div>
 <template id="fp_ico">@ICO_PASTA@</template>
-<div id="fp" role="dialog" aria-modal="true" aria-labelledby="fp_tit">
- <div class="fp-topo">
-  <h2 id="fp_tit" style="color:var(--accent);font-size:12px">Escolher a pasta</h2>
-  <button class="mini" onclick="fpFechar()" title="fechar" aria-label="fechar">&times;</button>
- </div>
- <div class="fp-nav">
-  <button class="mini" id="fp_bvolta" onclick="fpVoltar()"
-   title="voltar" aria-label="voltar">&#8592;</button>
-  <button class="mini" id="fp_bfrente" onclick="fpAvancar()"
-   title="avancar" aria-label="avancar">&#8594;</button>
-  <button class="mini" id="fp_bsobe" onclick="fpSubir()" title="subir um nivel"
-   aria-label="subir um nivel">&#8593;</button>
-  <button class="mini" id="fp_bfav" onclick="fpIrFavorita()"
-   title="ir para a pasta favorita" aria-label="ir para a pasta favorita">@ICO_ESTRELA@</button>
-  <span class="fp-cam"><input id="fp_cam" spellcheck="false" aria-label="caminho"></span>
-  <button class="mini" onclick="fpIr()">Ir</button>
- </div>
- <div class="fp-corpo">
-  <aside class="fp-lado" aria-label="unidades">
-   <div class="fp-sec" data-radai-frase>Unidades</div>
-   <div id="fp_arvore" role="tree"></div>
-  </aside>
-  <section class="fp-dir">
-   <div class="fp-ferr">
-    <input id="fp_busca" spellcheck="false"
-     placeholder="buscar nesta pasta &mdash; trecho do nome ou do prontu&aacute;rio">
-    <button class="mini" onclick="fpBuscarLimpar()">limpar</button>
-    <span class="fp-ord" role="group" aria-label="ordenar">
-     <button id="fp_onome" data-ord="nome" aria-pressed="true">Nome</button>
-     <button id="fp_odata" data-ord="data" aria-pressed="false">Data</button>
-    </span>
-   </div>
-   <div class="fp-cab"><span data-radai-frase>Nome</span><span data-radai-frase>Modificada em</span></div>
-   <div id="fp_lista" role="listbox" aria-label="pastas"></div>
-   <div class="sub" id="fp_erro" style="margin:6px 0 0"></div>
-  </section>
- </div>
- <div class="fp-pe">
-  <button class="mini" onclick="fpFavoritar()"
-   title="esta pasta passa a ser a que o seletor abre">@ICO_ESTRELA@<span data-radai-frase>marcar como favorita</span></button>
-  <span class="fp-esp"></span>
-  <button onclick="fpFechar()">Cancelar</button>
-  <button class="pri" onclick="fpUsar()">Usar esta pasta</button>
- </div>
-</div>
 <script>@VISORJS@</script>
 <script>
 var SERIES=[], INCL={};
@@ -4542,6 +4643,8 @@ function novasSeries(){
  SELECAO_DA_FICHA = false;
  try{ sessionStorage.removeItem('radai_lote_pasta') }catch(e){}
  var c = el('pasta'); if(c) c.value = FP_FAV || '';
+ if(LT_VARRE && LT_VARRE.vivo()) LT_VARRE.parar(true);
+ LT_LER = null; _ltModo(false); _ltFora(null, 0);
  _notaNoPopup('');
  _achouNaTela('', '');
  msg(FP_FAV ? 'pasta favorita preenchida — clique em «Varrer séries»' : '', true);
@@ -4584,56 +4687,145 @@ function horaBr(t){
  return m ? (m[1]+':'+m[2]) : '';
 }
 
+var LT_VARRE = null, LT_LER = null, LT_FECHOU_A_MAO = false;
+var LT_CONFIRMACAO_MS = 900;
+function _ltModo(lendo){
+ var f = el('lt_form'), l = el('lt_ler'), b = el('lt_parar');
+ if(f) f.hidden = !!lendo;
+ if(l){ l.hidden = !lendo; l.classList.remove('feito') }
+ if(b) b.disabled = false;
+}
+function _ltContas(d){
+ var p = [uiMolde('%s pasta(s) olhada(s)', [d.pastas || 0]),
+          uiMolde('%s arquivo(s) lido(s)', [d.arquivos || 0]),
+          uiMolde('%s série(s) achada(s)', [d.series || 0])];
+ if(d.fora_da_data)
+  p.push(uiMolde('%s pasta(s) ficaram fora do filtro de data.', [d.fora_da_data]));
+ return p;
+}
+function _ltViva(s){
+ var m = modalidadeDe(s);
+ return '<span class="md">' + (m === 'MR' ? 'RM' : (m === 'CT' ? 'TC' : '—')) + '</span>'
+  + '<span class="ds">' + esc(s.desc || '') + '</span>'
+  + '<span class="nm">' + esc(s.cortes || 0) + ' <span data-radai-frase>cortes</span></span>'
+  + '<span class="nm">' + esc(dataBr(s.date)) + '</span>';
+}
+function _ltFora(d, dias){
+ var f = el('lt_fora'); if(!f) return;
+ if(!(d && d.fora_da_data && dias)){ f.innerHTML = ''; return }
+ uiHTML(f, '<span data-radai-frase>'
+  + esc(uiMolde('%s pasta(s) ficaram fora do filtro de data.', [d.fora_da_data]))
+  + '</span><button type="button" class="mini" onclick="ltTodasAsDatas()"'
+  + ' data-radai-frase>Ler todas as datas</button>');
+ try{ if(window.radaiRetraduzir) window.radaiRetraduzir() }catch(e){}
+}
+function ltTodasAsDatas(){
+ if(window.uiDias) uiDias('lt_dias', 0);
+ varrer();
+}
+function ltParar(){
+ var b = el('lt_parar'); if(b) b.disabled = true;
+ if(LT_VARRE && LT_VARRE.vivo()) LT_VARRE.parar();
+}
+function _ltAoFecharPopup(){
+ if(LT_VARRE && LT_VARRE.vivo()){ LT_FECHOU_A_MAO = true; ltParar() }
+}
+var LT_ABERTURAS = 0;
+function _ltAoAbrirPopup(){
+ LT_ABERTURAS++;
+ if(!(LT_VARRE && LT_VARRE.vivo())) _ltModo(false);
+}
+
 function varrer(o){
  o = o || {};
- var p=el('pasta').value;
- if(!p){ msg('informe a pasta',false); uiTremer(el('pasta')); return }
- msg('Varrendo a pasta: o cabeçalho de cada arquivo é lido, e uma pasta grande pode levar alguns minutos.', true);
+ var p = el('pasta').value;
+ if(!p){ msg('informe a pasta', false); uiTremer(el('pasta')); return }
+ var dias = window.uiDias ? uiDias('lt_dias') : 7;
+ msg('', true); _ltFora(null, 0); _notaNoPopup('');
+ LT_FECHOU_A_MAO = false;
  esqueleto(el('tab'), 5);
+ var ler = null;
+ if(!o.quieto){
+  ltEscolha();
+  _ltModo(true);
+  ler = uiLeitura('lt_ler_cx');
+  ler.estados(['Lendo os cabeçalhos dos arquivos…', 'Procurando séries nas subpastas…']);
+  ler.conta(_ltContas({}));
+ }
+ LT_LER = ler;
+ LT_VARRE = uiVarrer({uso: 'lote', chave: 'lote', pasta: p, dias: dias,
+  aoProgresso: function(d){
+   if(!ler || LT_LER !== ler) return;
+   if(d.etapa === 'fechando') ler.estados(['Conferindo as séries achadas…']);
+   ler.conta(_ltContas(d));
+  },
+  aoParcial: function(linhas, d){
+   if(ler && LT_LER === ler && !d.final) ler.series(linhas, _ltViva);
+  },
+  aoFim: function(linhas, d){ _ltFim(linhas, d, ler, dias, p, o) },
+  aoErro: function(m){
+   if(LT_LER !== ler) return;
+   _ltModo(false); ltEscolha(); msg('ERRO: ' + m, false);
+  }});
+}
+function _ltFim(linhas, d, ler, dias, p, o){
+ if(LT_LER !== ler) return;
+ d = d || {};
+ var r = d.extra || {};
+ window.CURTAS = r.curtas || []; window.PISO = r.piso || 20;
+ var nota = _notaDasCurtas();
+ var interrompida = !!d.parado;
+ var series = d.final ? (linhas || []) : [];
+ if(!series.length){
+  SERIES = [];
+  sincronizarIncl(); pintarTabela(); _tituloDoPasso2(false);
+  if(window.psFechar) psFechar('cx2');
+  _achouNaTela('', '');
+  _ltModo(false);
+  if(LT_FECHOU_A_MAO) return;
+  ltEscolha();
+  msg(interrompida ? 'A busca foi interrompida: a lista tem só o que foi achado até ali.'
+                   : 'Nenhuma série nesta pasta.', false);
+  _notaNoPopup(nota);
+  _ltFora(d, dias);
+  return;
+ }
+ SERIES = series;
+ window.PASTA_VARRIDA = r.pasta || p;
+ try{ sessionStorage.setItem('radai_lote_pasta', window.PASTA_VARRIDA); }
+ catch(e){}
  if(!o.quieto) psAbrir('cx2', true);
- fetch('/api/lote/varrer',{method:'POST',headers:{'Content-Type':'application/json'},
-  body:JSON.stringify({pasta:p})}).then(r=>r.json()).then(function(d){
-   if(d.erro){ ltEscolha(); msg('ERRO: '+d.erro,false); return }
-   window.CURTAS = d.curtas || []; window.PISO = d.piso || 20;
-   var nota = _notaDasCurtas();
-   if(!(d.series && d.series.length)){
-    SERIES = [];
-    sincronizarIncl(); pintarTabela(); _tituloDoPasso2(false);
-    if(window.psFechar) psFechar('cx2');
-    _achouNaTela('', '');
-    ltEscolha();
-    msg('Nenhuma série nesta pasta.', false);
-    _notaNoPopup(nota);
-    return;
-   }
-   if(window.uiPopupSerie) uiPopupSerie('cx1').fechar();
-   SERIES=d.series;
-   window.PASTA_VARRIDA = d.pasta || p;
-   try{ sessionStorage.setItem('radai_lote_pasta', window.PASTA_VARRIDA); }
-   catch(e){}
-   if(!o.quieto) psAbrir('cx2', true);
-   var umExame = !!d.um_exame;
-   var molde = umExame
-     ? '%s serie(s) encontrada(s) — mesmo exame, reconstruido varias vezes'
-     : '%s serie(s) encontrada(s)';
-   msg(molde.replace('%s', SERIES.length), true);
-   _notaNoPopup('');
-   _achouNaTela(molde.replace('%s', SERIES.length), nota);
-   _tituloDoPasso2(false);
-   SERIES.forEach(function(s){
-     var k = chaveDe(s);
-     if(VISTAS[k]) return;                 // ja foi oferecida uma vez
-     VISTAS[k] = true;
-     if(s.situacao!=='processando' && s.situacao!=='concluida'
-        && !(s.situacao==='retomavel' && !s.minha)
-        && (!umExame || s.sugerida)) porNoCarrinho(s, true)});
-   SERIES.forEach(function(s){
-     var k = chaveDe(s); if(!CARRINHO[k]) return;
-     var ant = CARRINHO[k];
-     s._raiz = ant._raiz || window.PASTA_VARRIDA || '';
-     CARRINHO[k] = s});
-   sincronizarIncl(); pintarTabela();
- }).catch(function(e){ ltEscolha(); msg('ERRO: '+e,false) })}
+ var umExame = !!r.um_exame;
+ var molde = umExame
+   ? '%s série(s) encontrada(s) — mesmo exame, reconstruído várias vezes'
+   : '%s série(s) encontrada(s)';
+ _achouNaTela(molde.replace('%s', SERIES.length), nota,
+              interrompida ? 'A busca foi interrompida: a lista tem só o que foi achado até ali.' : '');
+ _tituloDoPasso2(false);
+ SERIES.forEach(function(s){
+   var k = chaveDe(s);
+   if(VISTAS[k]) return;
+   VISTAS[k] = true;
+   if(s.situacao!=='processando' && s.situacao!=='concluida'
+      && !(s.situacao==='retomavel' && !s.minha)
+      && (!umExame || s.sugerida)) porNoCarrinho(s, true)});
+ SERIES.forEach(function(s){
+   var k = chaveDe(s); if(!CARRINHO[k]) return;
+   var ant = CARRINHO[k];
+   s._raiz = ant._raiz || window.PASTA_VARRIDA || '';
+   CARRINHO[k] = s});
+ sincronizarIncl(); pintarTabela();
+ var popup = window.uiPopupSerie ? uiPopupSerie('cx1') : null;
+ function fechar(){ if(popup) popup.fechar(); _ltModo(false) }
+ if(ler && !interrompida && popup && popup.aberto()){
+  var cx = el('lt_ler'); if(cx) cx.classList.add('feito');
+  var vez = LT_ABERTURAS;
+  ler.pronto(molde.replace('%s', SERIES.length)).then(function(){
+   // GUARDA: popup reaberto durante a confirmação é da pessoa; o fechamento automático não o leva.
+   setTimeout(function(){ if(LT_LER === ler && LT_ABERTURAS === vez) fechar() }, LT_CONFIRMACAO_MS);
+  });
+ } else fechar();
+}
 function _notaDasCurtas(){
  if(!(window.CURTAS && CURTAS.length)) return '';
  return '<b>'+CURTAS.length+'</b> série(s) desta pasta não '
@@ -4651,13 +4843,18 @@ function _notaNoPopup(h){
  fora.style.display = h ? '' : 'none';
  fora.innerHTML = h || '';
 }
-function _achouNaTela(t, nota){
+function _achouNaTela(t, nota, aviso){
  var r = el('lt_achou'); if(!r) return;
  r.innerHTML = '';
  if(t){
   var c = document.createElement('div'); c.className = 'lt-conta';
   if(window.uiTexto) uiTexto(c, t); else c.textContent = t;
   r.appendChild(c);
+ }
+ if(aviso){
+  var a = document.createElement('div'); a.className = 'fora-nota';
+  a.setAttribute('data-radai-frase', '');
+  a.textContent = aviso; r.appendChild(a);
  }
  if(nota){
   var n = document.createElement('div'); n.className = 'fora-nota';
@@ -4692,7 +4889,7 @@ function pintarCarrinho(){
  }
  if(!L.length){
   uiHTML(cx.querySelector('#cartxt'),
-    '<span data-radai-frase>Nenhuma série no carrinho — inclua na tabela acima.</span>');
+    '<span data-radai-frase>Nenhuma série no carrinho — selecione na tabela acima.</span>');
  } else {
   var _fr = (r > 1) ? '%s série(s) no carrinho, de %s pastas'
                     : '%s série(s) no carrinho';
@@ -4806,8 +5003,8 @@ function linhaDaSerie(i){
    var bt = trava
      ? '<button class="mini" disabled title="outra estação está com esta série">travada</button>'
      : '<button class="mini'+(dentro?' dentro':'')+'" onclick="alternar('+i+')">'
-       +(dentro?'<span aria-hidden="true">&#10003;</span> <span data-radai-frase>incluída</span>'
-               :'incluir para processar')+'</button>';
+       +(dentro?'<span aria-hidden="true">&#10003;</span> <span data-radai-frase>selecionada</span>'
+               :'selecionar para processar')+'</button>';
    var ver = s.tem_rs
      ? '<button class="mini" onclick="verNoPasso4('+i+')">ver contornos</button>'
      : '<button class="mini" id="vi_'+i+'" onclick="verNoPasso4('+i+')">'
@@ -4942,7 +5139,7 @@ function rodar(){
 
 var CAMPOS_DA_ESCOLHA = ['estudos', 'tasks_extra', 'motores_extra', 'modo',
                          'protocolos', 'protocolos_3d', 'tasks', 'comparacao',
-                         'oar_fora'];
+                         'oar_fora', 'protocolo_proprio', 'achado_declarado'];
 function payloadDaSerie(s){
  var d = {};
  for(var c in s){
@@ -4958,6 +5155,8 @@ function payloadDaSerie(s){
   d.tasks = chavesFinais(s, e);
   d.comparacao = comparacaoDe(s, e);
   d.oar_fora = Object.keys(e.oar_fora).filter(function(k){ return e.oar_fora[k] });
+  var pp = _ppDaSerie(s, e);
+  if(pp) d.protocolo_proprio = pp.id;
  }
  return d;
 }
@@ -4985,11 +5184,34 @@ function _refazerPosJa(s){
   _abrirAFila();
  }).catch(function(e){ cartMsg(esc('ERRO: '+e), false) });
 }
-function mandarParaAFila(sel, refazer){
- var bt = el('btrodar'); if(bt) bt.disabled = true;
+function _achadosAPedir(sel){
+ var itens = [];
+ sel.forEach(function(s){
+  var pp = _ppDaSerie(s);
+  var t = pp && pp.tem_achado ? (pp.nome + ' · ' + (pp.achados || []).join(', ')) : '';
+  if(t && itens.indexOf(t) < 0) itens.push(t);
+ });
+ return itens;
+}
+function _pedirADeclaracao(itens, aoSim){
+ perguntar({titulo: 'Detecção (ACHADO) no protocolo próprio', ok: 'Declarar e enviar à fila',
+  html: '<div class="tk-b"><p data-radai-frase>A detecção (ACHADO) roda só por ato declarado, e se declara de novo a cada envio à fila. O resultado sai no arquivo próprio do achado, nunca no STUDY.</p>'
+   + _chipsHTML(itens) + '</div>',
+  aoSim: aoSim});
+}
+function mandarParaAFila(sel, refazer, declarado){
+ var itens = declarado ? [] : _achadosAPedir(sel);
+ if(itens.length){
+  _pedirADeclaracao(itens, function(){ mandarParaAFila(sel, refazer, true) });
+  return;
+ }
  var series = sel.map(payloadDaSerie);
  if(refazer) series.forEach(function(d, k){
    if(refazer.indexOf(sel[k]) >= 0) d.substituir = true });
+ if(declarado) series.forEach(function(d, k){
+   var pp = _ppDaSerie(sel[k]);
+   if(pp && pp.tem_achado) d.achado_declarado = true });
+ var bt = el('btrodar'); if(bt) bt.disabled = true;
  fetch('/api/lote/enfileirar',{method:'POST',
    headers:{'Content-Type':'application/json'},
    body:JSON.stringify({series:series, incluir_vista:null})})
@@ -5079,6 +5301,8 @@ function verNoPasso4(i){
 
 if(window.uiPopupSerie)
  uiPopupSerie('cx1', {sozinho: function(){ return !LT_CHEGOU_COM_SERIES }});
+if(window.uiPopupSerie) uiPopupSerie('cx1', {aoFechar: _ltAoFecharPopup,
+ aoAbrir: function(){ _ltAoAbrirPopup() }});
 ['cx2'].forEach(function(id){
  var c = el(id); if(c) c.classList.add('fechado');
 });
@@ -5173,39 +5397,14 @@ function _ovPreencher(){
   _ovLaudo('Não consegui ler a configuração desta estação.', 'ruim');
  });
 }
-function _ovPastas(caminho){
- var lista = _ovQ('#ov_p_lista'), cam = _ovQ('#ov_p_cam');
- if(!lista) return;
- lista.innerHTML = '<div class="ui-esqueleto ui-esq-l"></div><div class="ui-esqueleto ui-esq-l"></div>';
- fetch('/api/pastas', {method:'POST', headers:{'Content-Type':'application/json'},
-   body: JSON.stringify({caminho: caminho || ''})})
- .then(function(r){ return r.json() }).then(function(d){
-  d = d || {};
-  OV.pasta = d.caminho || ''; OV.pai = d.pai || '';
-  if(cam) cam.textContent = OV.pasta || '—';
-  var itens = OV.pasta ? (d.pastas || []).map(function(x){ return [x.nome, x.caminho] })
-                       : (d.unidades || []).map(function(u){ return [u, u] });
-  var ic = document.getElementById('fp_ico');
-  var ico = ic ? ic.innerHTML : '';
-  var h = itens.map(function(x){
-   return '<button type="button" class="ov-p-item" role="option" data-ov-cam="'
-     + esc(x[1]) + '">' + ico + '<span>' + esc(x[0]) + '</span></button>';
-  }).join('');
-  if(d.erro) h = '<p class="ov-p-vazio">' + esc(d.erro) + '</p>' + h;
-  if(!h) h = '<p class="ov-p-vazio" data-radai-frase>Nenhuma subpasta aqui.</p>';
-  uiHTML(lista, h);
-  var sobe = _ovQ('#ov_p_sobe'), usar = _ovQ('#ov_p_usar');
-  if(sobe) sobe.disabled = !OV.pasta;
-  if(usar) usar.disabled = !OV.pasta;
-  try{ if(window.radaiRetraduzir) window.radaiRetraduzir() }catch(x){}
- }).catch(function(e){ uiHTML(lista, '<p class="ov-p-vazio">' + esc('ERRO: ' + e) + '</p>') });
-}
 function _ovAbrirPastas(){
- var cx = _ovQ('#ov_pastas'), bt = _ovQ('#ov_root_bt');
- if(!cx) return;
- cx.hidden = !cx.hidden;
- if(bt) bt.setAttribute('aria-expanded', cx.hidden ? 'false' : 'true');
- if(!cx.hidden) _ovPastas(_ovValores().ROOT || '');
+ if(!window.uiExplorador) return;
+ uiExplorador({titulo: 'Pasta que o turno varre', inicial: _ovValores().ROOT || '',
+  origem: _ovQ('#ov_root_bt'),
+  aoUsar: function(c){
+   var r = _ovQ('#ov_root'); if(!r || !c) return;
+   r.value = c; _ovTestar();
+  }});
 }
 function _ovLigar(){
  var v = document.querySelector('.ui-pnl-veu'); if(!v) return;
@@ -5237,23 +5436,7 @@ function _ovLigar(){
      (parseInt(di.value, 10) || 0) + parseInt(dd.getAttribute('data-ov-dias'), 10))));
    _ovEstado(); return;
   }
-  var aj = t.closest('.ov-ajuda');
-  if(aj){
-   var det = _ovQ('#ov_balao'), abre = aj.getAttribute('aria-expanded') !== 'true';
-   aj.setAttribute('aria-expanded', abre ? 'true' : 'false');
-   if(det){ det.hidden = !abre; if(abre && window.uiRevelar) window.uiRevelar(det, false) }
-   return;
-  }
   if(t.closest('#ov_root_bt')){ _ovAbrirPastas(); return }
-  if(t.closest('#ov_p_sobe')){ if(OV.pai) _ovPastas(OV.pai); else _ovPastas(''); return }
-  if(t.closest('#ov_p_usar')){
-   var r = _ovQ('#ov_root'); if(r && OV.pasta) r.value = OV.pasta;
-   var cx = _ovQ('#ov_pastas'); if(cx) cx.hidden = true;
-   var bt = _ovQ('#ov_root_bt'); if(bt) bt.setAttribute('aria-expanded', 'false');
-   _ovTestar(); return;
-  }
-  var it = t.closest('[data-ov-cam]');
-  if(it){ _ovPastas(it.getAttribute('data-ov-cam')); return }
  };
  var digito = function(ev){
   var t = ev.target; if(!t) return;
@@ -5291,12 +5474,14 @@ function folhaOvernight(){
   ok: 'Salvar e iniciar',
   cancelar: 'Cancelar',
   debaixo: true,
-  aoSim: function(){ var v = _ovValores(), c = _ovQ('#ov_pausar');
-                     _ovSemBotao(); ovIniciar(true, v, c ? c.checked : true) },
+  aoSim: function(){ var v = _ovValores();
+                     _ovSemBotao(); ovIniciar(true, v) },
   aoNao: function(){ _ovSemBotao() }
  });
  _ovTravarSalvar();
  _ovLigar();
+ var fav = _ovQ('[data-ui-fav]');
+ if(fav && window.uiFavoritaLigar) uiFavoritaLigar(fav);
  _ovPreencher();
  if(window.uiRevelar) window.uiRevelar(_ovQ('.ov-form'), true);
  try{ if(window.radaiRetraduzir) window.radaiRetraduzir() }catch(x){}
@@ -5330,9 +5515,8 @@ function _ovCard(txt){ var tx = el('cd_night_tx'); if(tx && txt) uiTexto(tx, txt
 function _ovErro(msg){
  perguntar({titulo: 'Overnight Run', corpo: String(msg || ''), ok: 'Fechar', so_ok: true});
 }
-function ovIniciar(salvar, valores, pausar){
+function ovIniciar(salvar, valores){
  var v = valores || _ovValores();
- if(pausar === undefined){ var c = _ovQ('#ov_pausar'); pausar = c ? c.checked : true }
  _ovCard('Preparando o Overnight Run…');
  var passo = Promise.resolve(true);
  if(salvar){
@@ -5346,7 +5530,7 @@ function ovIniciar(salvar, valores, pausar){
    return fetch('/api/reiniciar', {method:'POST'}).then(function(){ return true });
   });
  }
- passo.then(function(){ return _ovPorNaFila(pausar) })
+ passo.then(function(){ return _ovPorNaFila() })
   .catch(function(e){ filaEstado(); _ovErro((e && e.message) || e) });
 }
 function _ovFilaAnda(d){
@@ -5364,8 +5548,8 @@ function _ovIniciarAFila(d){
    if(typeof radaiFilaCarregar === 'function') radaiFilaCarregar();
   });
 }
-function _ovPorNaFila(pausar){
- return filaOvernight(true, pausar).then(function(d){
+function _ovPorNaFila(){
+ return filaOvernight(true).then(function(d){
   var frente = ((d && d.cards) || []).some(function(c){
    return c.tipo === 'serie' && (c.estado === 'esperando' || c.estado === 'rodando') });
   if(frente && !_ovFilaAnda(d)) return _ovIniciarAFila(d);
@@ -5395,7 +5579,7 @@ function _ovJaNaFila(){
   if(!(st && st.overnight)){ filaOvernight(false); return }
   perguntar({
    titulo: 'Encerrar o Overnight Run',
-   corpo: 'A série em curso termina, os serviços pausados voltam ao que eram e a estação deixa de varrer sozinha.',
+   corpo: 'A série em curso termina e a estação deixa de varrer sozinha.',
    ok: 'Encerrar o turno',
    aoSim: function(){
     fetch('/api/overnight/encerrar', {method:'POST'}).then(function(r){ return r.json() })
@@ -5407,8 +5591,7 @@ function _ovJaNaFila(){
 
 function filaOvernight(){
  var quero = (arguments.length ? !!arguments[0] : !NIGHT_ON);
- var pausar = (arguments.length > 1) ? !!arguments[1] : true;
- var corpo = {ligado:quero, pausar_servicos:pausar};
+ var corpo = {ligado:quero};
  return fetch('/api/fila/overnight',{method:'POST',
   headers:{'Content-Type':'application/json'},
   body:JSON.stringify(corpo)})
@@ -5424,6 +5607,7 @@ function filaEstadoPintar(d){
  L.forEach(function(c){ if(c.tipo === 'overnight') cardTurno = c });
  NIGHT_ON = !!cardTurno;
  if(!NIGHT_ON){ OV.turno = false; OV.pendente = false; OV.rootAdiado = false }
+ if(cardTurno && cardTurno.estado === 'rodando') OV.turno = true;
  var cd = el('cd_night'), tx = el('cd_night_tx');
  if(cd) cd.classList.toggle('ligado', NIGHT_ON);
  if(tx) uiTexto(tx, (NIGHT_ON && OV.turno)
@@ -5454,7 +5638,6 @@ fetch('/api/lote/favorita',{method:'POST',
  headers:{'Content-Type':'application/json'},body:'{}'})
 .then(function(r){return r.json()}).then(function(d){
  FP_FAV = d.favorita || '';
- if(typeof fpBotoes === 'function') fpBotoes();
  var campo = el('pasta');
  if(FP_FAV && campo && !campo.value){
   campo.value = FP_FAV;
@@ -5489,229 +5672,17 @@ fetch('/api/lote/favorita',{method:'POST',
  }).catch(function(e){ ltEscolha(); msg('ERRO: ' + e, false) });
 })();
 
-var FP_HIST = [], FP_POS = -1, FP_FAV = '';
-var FP_ORDEM = 'nome', FP_SENTIDO = 'asc';
-function fpNavegar(c){
- FP_HIST = FP_HIST.slice(0, FP_POS + 1);
- if(FP_HIST[FP_HIST.length - 1] !== c) FP_HIST.push(c);
- FP_POS = FP_HIST.length - 1;
- fpCarregar(c);
+var FP_FAV = '';
+function ltProcurar(bt){
+ if(!window.uiExplorador){ msg('não consegui abrir o seletor de pastas', false); return }
+ window.uiExplorador({titulo: 'Escolher a pasta', origem: bt || el('lt_procurar'),
+  inicial: ((el('pasta') || {}).value || FP_FAV || '').trim(),
+  aoUsar: function(c){
+   if(!c) return;
+   el('pasta').value = c;
+   varrer();
+  }});
 }
-function fpVoltar(){ if(FP_POS > 0){ FP_POS--; fpCarregar(FP_HIST[FP_POS]) } }
-function fpAvancar(){ if(FP_POS < FP_HIST.length-1){ FP_POS++; fpCarregar(FP_HIST[FP_POS]) } }
-function fpSubir(){
- if(window.FP_PAI) fpNavegar(window.FP_PAI);
-}
-function fpBotoes(){
- var a=el('fp_bvolta'), b=el('fp_bfrente'), f=el('fp_bfav'), s=el('fp_bsobe');
- if(a) a.disabled = !(FP_POS > 0);
- if(b) b.disabled = !(FP_POS < FP_HIST.length - 1);
- if(s) s.disabled = !window.FP_PAI;
- if(f) f.style.display = FP_FAV ? '' : 'none';
-}
-function fpIrFavorita(){ if(FP_FAV) fpNavegar(FP_FAV) }
-function fpFavoritar(){
- var c = el('fp_cam').value || '';
- if(!c){ uiTexto(el('fp_erro'), 'escolha uma pasta primeiro'); return }
- fetch('/api/lote/favorita',{method:'POST',
-  headers:{'Content-Type':'application/json'},body:JSON.stringify({caminho:c})})
- .then(function(r){return r.json()}).then(function(d){
-  if(d.erro){ uiTexto(el('fp_erro'), 'ERRO: '+d.erro); return }
-  FP_FAV = d.favorita || c; fpBotoes();
-  uiTexto(el('fp_erro'), 'favorita guardada no radai_watcher.config (o seletor ja abre nela; o vigia le no proximo arranque)');
- }).catch(function(e){ uiTexto(el('fp_erro'), 'ERRO: '+e) });
-}
-function fpBuscar(){ fpCarregar(el('fp_cam').value || '') }
-function fpBuscarLimpar(){ var i=el('fp_busca'); if(i) i.value=''; fpBuscar() }
-
-function fpAbrir(){
- el('fundo').style.display='block'; el('fp').style.display='block';
- var inicio = el('pasta').value || FP_FAV || '';
- FP_HIST = []; FP_POS = -1;
- fpArvore();
- if(inicio) fpNavegar(inicio);
- else fpPintarLista({pastas:[], caminho:''});
-}
-function fpFechar(){el('fundo').style.display='none';el('fp').style.display='none'}
-function fpIr(){fpNavegar(el('fp_cam').value)}
-function fpUsar(){el('pasta').value=el('fp_cam').value;fpFechar();varrer()}
-
-function fpPedir(corpo){
- return fetch('/api/lote/pastas',{method:'POST',
-   headers:{'Content-Type':'application/json'},body:JSON.stringify(corpo)})
-  .then(function(r){return r.json()});
-}
-
-var FP_TIPO = {fixa:'local', rede:'rede', removivel:'removível',
-               optica:'óptica', ram:'RAM'};
-function fpNo(c, rotulo, tipo, respondeu){
- var no = document.createElement('div');
- no.className = 'fp-no'; no.setAttribute('role', 'treeitem');
- no.setAttribute('aria-expanded', 'false');
- no.setAttribute('data-c', c);
- var tg = document.createElement('button');
- tg.type = 'button'; tg.className = 'fp-tg'; tg.textContent = '▸';
- tg.setAttribute('aria-label', 'abrir');
- var nm = document.createElement('span');
- nm.className = 'fp-nm'; nm.tabIndex = 0; nm.textContent = rotulo;
- if(tipo || respondeu === null){
-  var t = document.createElement('span');
-  t.className = 'fp-tipo'; t.setAttribute('data-radai-frase', '');
-  t.textContent = (respondeu === null) ? 'não respondeu' : (FP_TIPO[tipo] || tipo);
-  nm.appendChild(t);
- }
- no.appendChild(tg); no.appendChild(nm);
- var filhos = document.createElement('div');
- filhos.className = 'fp-filhos'; filhos.hidden = true;
- var caixa = document.createElement('div');
- caixa.appendChild(no); caixa.appendChild(filhos);
- return caixa;
-}
-function fpArvore(){
- var arv = el('fp_arvore'); if(!arv) return;
- if(!arv.dataset.javeio){
-  arv.innerHTML = '<div class="ui-esqueleto ui-esq-l"></div>'
-   + '<div class="ui-esqueleto ui-esq-l"></div>';
- }
- fpPedir({caminho:'', unidades:true}).then(function(d){
-  arv.dataset.javeio = '1';
-  arv.innerHTML = '';
-  (d.unidades||[]).forEach(function(u){
-   arv.appendChild(fpNo(u.raiz, u.raiz, u.tipo, u.ok));
-  });
-  if(!arv.children.length){
-   var v = document.createElement('div');
-   v.className = 'fp_item vazio'; v.setAttribute('data-radai-frase','');
-   v.textContent = 'nenhuma unidade respondeu';
-   arv.appendChild(v);
-  }
-  fpMarcarAtual();
-  try{ if(window.radaiRetraduzir) window.radaiRetraduzir() }catch(e){}
- }).catch(function(e){ uiTexto(arv, 'ERRO: '+e) });
-}
-function fpExpandir(no){
- var filhos = no.parentNode.querySelector('.fp-filhos');
- var tg = no.querySelector('.fp-tg');
- if(!filhos) return;
- if(!filhos.hidden){                      // aberto: fecha
-  filhos.hidden = true; tg.textContent = '▸';
-  no.setAttribute('aria-expanded', 'false'); return;
- }
- filhos.hidden = false; tg.textContent = '▾';
- no.setAttribute('aria-expanded', 'true');
- if(filhos.dataset.javeio) return;
- filhos.innerHTML = '<div class="ui-esqueleto ui-esq-l"></div>';
- fpPedir({caminho:no.getAttribute('data-c'), ordem:'nome'}).then(function(d){
-  filhos.dataset.javeio = '1';
-  filhos.innerHTML = '';
-  (d.pastas||[]).forEach(function(p){
-   filhos.appendChild(fpNo(p.caminho, p.nome, '', true));
-  });
-  if(!(d.pastas||[]).length){
-   filhos.hidden = true; tg.disabled = true;
-  }
-  fpMarcarAtual();
- }).catch(function(){ filhos.innerHTML = ''; filhos.hidden = true;
-                      tg.textContent = '▸' });
-}
-function fpNorm(c){
- var SEP = new RegExp('[' + String.fromCharCode(92) + '/]+$');
- return String(c||'').replace(SEP, '').toLowerCase();
-}
-function fpMarcarAtual(){
- var atual = fpNorm((el('fp_cam')||{}).value || '');
- [].forEach.call(document.querySelectorAll('#fp_arvore .fp-no'), function(n){
-  n.classList.toggle('atual', !!atual && fpNorm(n.getAttribute('data-c')) === atual);
- });
-}
-el('fp_arvore').addEventListener('click', function(ev){
- var tg = ev.target.closest && ev.target.closest('.fp-tg');
- if(tg){ fpExpandir(tg.parentNode); return }
- var nm = ev.target.closest && ev.target.closest('.fp-nm');
- if(nm) fpNavegar(nm.parentNode.getAttribute('data-c'));
-});
-el('fp_arvore').addEventListener('keydown', function(ev){
- var nm = ev.target.closest && ev.target.closest('.fp-nm');
- if(nm && (ev.key === 'Enter' || ev.key === ' ')){
-  ev.preventDefault(); fpNavegar(nm.parentNode.getAttribute('data-c'));
- }
-});
-
-function fpOrdemPintar(){
- [['fp_onome','nome'],['fp_odata','data']].forEach(function(par){
-  var b = el(par[0]); if(!b) return;
-  var on = (FP_ORDEM === par[1]);
-  b.setAttribute('aria-pressed', on ? 'true' : 'false');
-  b.setAttribute('data-sentido', on ? FP_SENTIDO : '');
- });
-}
-function fpOrdenar(ordem){
- if(FP_ORDEM === ordem) FP_SENTIDO = (FP_SENTIDO === 'asc') ? 'desc' : 'asc';
- else { FP_ORDEM = ordem; FP_SENTIDO = (ordem === 'data') ? 'desc' : 'asc' }
- fpOrdemPintar();
- fpBuscar();
-}
-el('fp_onome').addEventListener('click', function(){ fpOrdenar('nome') });
-el('fp_odata').addEventListener('click', function(){ fpOrdenar('data') });
-
-function fpPintarLista(d){
- var q = ((el('fp_busca')||{}).value||'').trim();
- var partes = [];
- if(q && d.achados >= 0) partes.push('<b>' + esc(d.achados) + '</b> '
-   + '<span data-radai-frase>pasta(s) com o termo</span> «' + esc(q) + '»');
- if(d.mostrando) partes.push('<span data-radai-frase>mostrando</span> <b>'
-   + esc(d.mostrando) + '</b> <span data-radai-frase>de</span> <b>'
-   + esc(d.total) + '</b> <span data-radai-frase>pastas</span>');
- if(d.dica) partes.push('<span data-radai-frase>' + esc(d.dica) + '</span>');
- if(d.erro) partes.push('<span data-radai-frase>' + esc(d.erro) + '</span>'
-   + (d.tipo ? ' <code>' + esc(d.tipo) + '</code>' : ''));
- uiHTML(el('fp_erro'), partes.join(' — '));
- var ico = (el('fp_ico')||{}).innerHTML || '';
- var h = '';
- (d.pastas||[]).forEach(function(p){
-  h += '<div class="fp_item" role="option" tabindex="0" data-c="'+esc(p.caminho)+'">'
-    + '<span class="fp-n">' + ico + '<span>' + esc(p.nome) + '</span></span>'
-    + '<span class="fp-d">' + esc(p.data||'') + '</span></div>';
- });
- if(!h){
-  h = '<div class="fp_item vazio" data-radai-frase>'
-    + (d.caminho ? '(nenhuma subpasta aqui)'
-                 : 'Escolha uma unidade à esquerda para começar.')
-    + '</div>';
- }
- uiHTML(el('fp_lista'), h);
-}
-function fpCarregar(c){
- var q = ((el('fp_busca')||{}).value||'').trim();
- fpPedir({caminho:c, busca:q, ordem:FP_ORDEM, sentido:FP_SENTIDO})
- .then(function(d){
-  el('fp_cam').value=d.caminho||c||'';
-  window.FP_PAI = d.pai || '';
-  fpBotoes();
-  fpPintarLista(d);
-  fpMarcarAtual();
- }).catch(function(e){ uiTexto(el('fp_erro'), 'ERRO: '+e) });
-}
-el('fp_lista').addEventListener('click',function(ev){
- var t=ev.target.closest('.fp_item');
- if(t && t.getAttribute('data-c')) fpNavegar(t.getAttribute('data-c'))});
-el('fp_lista').addEventListener('keydown',function(ev){
- var t=ev.target.closest && ev.target.closest('.fp_item');
- if(t && t.getAttribute('data-c') && (ev.key === 'Enter' || ev.key === ' ')){
-  ev.preventDefault(); fpNavegar(t.getAttribute('data-c'));
- }});
-el('fp').addEventListener('keydown', function(ev){
- if(ev.key === 'Escape'){ ev.preventDefault(); fpFechar() }
-});
-var FP_T = null;
-el('fp_busca').addEventListener('input', function(){
- if(FP_T) clearTimeout(FP_T);
- FP_T = setTimeout(fpBuscar, 260);
-});
-el('fp_busca').addEventListener('keydown', function(ev){
- if(ev.key === 'Enter'){ if(FP_T) clearTimeout(FP_T); fpBuscar() }
-});
-fpOrdemPintar();
 
 var OPC={};
 var MODALIDADES=['CT','MR'];
@@ -5739,9 +5710,34 @@ var ESCOLHA = {};
 function escolhaDe(s){
  var k = chaveDe(s || {});
  if(!ESCOLHA[k]) ESCOLHA[k] = {modo:'', prot:{}, p3d:{}, mao:{}, comp:{}, oar_fora:{},
-                               livre:false};
+                               livre:false, pp:''};
  if(!ESCOLHA[k].p3d) ESCOLHA[k].p3d = {};
  return ESCOLHA[k];
+}
+function _ppsDaSerie(s){ return ((_opcDaSerie(s) || {}).protocolos_proprios || []) }
+function _ppDaSerie(s, e){
+ var id = (e || escolhaDe(s)).pp, achou = null;
+ if(!id) return null;
+ _ppsDaSerie(s).forEach(function(p){ if(p.id === id) achou = p });
+ return achou;
+}
+// GUARDA: as tasks que as estruturas do protocolo proprio exigem ficam ligadas e travadas; o achado dele nao entra aqui (so com a declaracao no envio).
+function _travadasPeloPp(s, e){
+ var pp = _ppDaSerie(s, e), por = _porTask(_opcDaSerie(s) || {}), fora = {};
+ if(!pp) return fora;
+ (pp.tasks || []).concat(pp.motores || []).forEach(function(t){
+  if(por[t] && por[t].permitida !== false && !por[t].achado) fora[t] = 1;
+ });
+ return fora;
+}
+function ligarProtocoloProprio(s, e, ligar, id){
+ if(!ligar){ e.pp = ''; e.mao = {}; return }
+ var lista = _ppsDaSerie(s), p = null;
+ lista.forEach(function(x){ if(x.id === id) p = x });
+ if(!p) p = lista[0];
+ if(!p) return;
+ e.pp = p.id; e.prot = {}; e.livre = false;
+ _soAsDele(s, e, (p.tasks || []).concat(p.motores || []));
 }
 function _opcDaSerie(s){ return OPC[modalidadeDe(s) || 'CT'] || null }
 function modoDe(s){ return escolhaDe(s).modo || MODO_DE_FABRICA }
@@ -5774,6 +5770,8 @@ function tasksLigadas(s, e){
    if(e.mao[x] === undefined && _arrastavel(por[x])) on[x] = 1;
   });
  });
+ var trava = _travadasPeloPp(s, e);
+ Object.keys(trava).forEach(function(t){ on[t] = 1 });
  return on;
 }
 function _soAsDele(s, e, lista){
@@ -5788,17 +5786,19 @@ function ligarProtocolo(s, e, cod, ligar){
  if(!p) return;
  if(!ligar){ delete e.prot[cod]; e.mao = {}; return }
  e.prot = {}; e.prot[cod] = true;
- e.p3d = {}; e.livre = false;
+ e.p3d = {}; e.livre = false; e.pp = '';
  _soAsDele(s, e, (p.tasks || []).concat(p.motores || []));
 }
 function ligarSelecaoLivre(s, e, ligar){
  if(!ligar){ e.livre = false; e.mao = {}; return }
+ e.pp = '';
  var d = _opcDaSerie(s) || {}, on = tasksLigadas(s, e);
  e.mao = {};
  (d.tasks || []).forEach(function(t){ e.mao[t.task] = on[t.task] ? 1 : 0 });
  e.prot = {}; e.p3d = {}; e.livre = true;
 }
 function chaveDaTask(s, e, t, ligar){
+ if(e.pp){ e.mao[t] = ligar ? 1 : 0; return }
  if(!e.livre) ligarSelecaoLivre(s, e, true);
  e.mao[t] = ligar ? 1 : 0;
 }
@@ -5842,6 +5842,8 @@ function resumoDoModo(s){
   var e = escolhaDe(s);
   (d.protocolos || []).forEach(function(p){ if(e.prot[p.cod]) fora.push(p.rotulo) });
   (d.protocolos_3d || []).forEach(function(p){ if((e.p3d || {})[p.cod]) fora.push(p.rotulo) });
+  var pp = _ppDaSerie(s, e);
+  if(pp) fora.push(pp.nome);
  }
  return fora;
 }
@@ -6013,13 +6015,15 @@ function _ajHTML(tipo, cod, rotulo){
  return '<button type="button" class="tk-aj" data-p4-aj="' + tipo + '" data-cod="'
   + esc(cod) + '" aria-label="' + esc(rot) + '" title="' + esc(rot) + '">?</button>';
 }
-function _linhaTask(t, ligada, base){
+function _linhaTask(t, ligada, base, travada){
  var proibida = (t.permitida === false);
  var h = '<div class="p4-ln' + (t.achado ? ' p4-achado' : '') + '" data-ln-task="'
    + esc(t.task) + '">'
    + _swHTML('p4-task-ck', 'data-task="' + esc(t.task) + '"',
-             base || (ligada && !proibida), base || proibida, t.rotulo || t.task, true);
+             base || travada || (ligada && !proibida), base || proibida || travada,
+             t.rotulo || t.task, true);
  if(t.achado) h += '<span class="selo-achado">ACHADO</span>';
+ if(travada && !base) h += '<span class="p4-trava" data-radai-frase>exigida pelo protocolo próprio</span>';
  if(!base && proibida) h += '<span class="p4-trava" data-radai-frase>não permitida neste motor</span>';
  return h + _ajHTML('task', t.task, t.rotulo || t.task) + '</div>';
 }
@@ -6061,8 +6065,24 @@ function painelPerso(i){
  h += '<div class="p4-ln p4-livre">'
    + _swHTML('p4-livre-ck', 'data-livre="1"', !!e.livre, false, 'Seleção livre', true)
    + _ajHTML('livre', 'livre', 'Seleção livre') + '</div>';
+ var pps = d.protocolos_proprios || [], ppAt = _ppDaSerie(s, e);
+ if(pps.length){
+  h += '<h4 class="p4-h3d" id="p4h_pp_' + i + '"><span data-radai-frase>PROTOCOLO PRÓPRIO</span></h4>'
+    + '<div class="p4-ln">'
+    + _swHTML('p4-pp-ck', 'data-pp="1"', !!ppAt, false, 'Protocolo próprio', true)
+    + _ajHTML('pp', 'pp', 'Protocolo próprio') + '</div>'
+    + '<select class="p4-pp-sel" aria-labelledby="p4h_pp_' + i + '"' + (ppAt ? '' : ' disabled') + '>';
+  pps.forEach(function(p){
+   h += '<option value="' + esc(p.id) + '"' + (ppAt && ppAt.id === p.id ? ' selected' : '') + '>'
+     + esc(p.nome) + (p.tem_achado ? (' · ' + esc(_nomeNaTela('ACHADO'))) : '') + '</option>';
+  });
+  h += '</select>';
+  if(ppAt && ppAt.tem_achado)
+   h += '<p class="p4-pp-nota" role="note"><span class="selo-achado">ACHADO</span> <span data-radai-frase>Este protocolo inclui detecção: ela é declarada a cada envio à fila.</span></p>';
+ }
  h += '</section>';
 
+ var trava = _travadasPeloPp(s, e);
  var dos = [], avulsas = [], achados = [];
  (d.tasks || []).forEach(function(t){
   (t.achado ? achados : ((t.protocolos || []).length ? dos : avulsas)).push(t);
@@ -6074,11 +6094,11 @@ function painelPerso(i){
                    + _linhaTask(d.base_item, true, true);
  if(dos.length){
   h += '<div class="p4-grupo" data-radai-frase>dos protocolos</div>';
-  dos.forEach(function(t){ h += _linhaTask(t, !!on[t.task], false) });
+  dos.forEach(function(t){ h += _linhaTask(t, !!on[t.task], false, !!trava[t.task]) });
  }
  if(avulsas.length){
   h += '<div class="p4-grupo" data-radai-frase>avulsas</div>';
-  avulsas.forEach(function(t){ h += _linhaTask(t, !!on[t.task], false) });
+  avulsas.forEach(function(t){ h += _linhaTask(t, !!on[t.task], false, !!trava[t.task]) });
  }
  if(achados.length){
   h += '<div class="p4-grupo achado" data-radai-frase>achado: só com a chave da própria task</div>';
@@ -6158,6 +6178,9 @@ function _acertarChaves(i){
  Array.prototype.forEach.call(tr.querySelectorAll('input.p4-livre-ck'), function(x){
   x.checked = !!e.livre;
  });
+ Array.prototype.forEach.call(tr.querySelectorAll('input.p4-pp-ck'), function(x){
+  x.checked = !!e.pp;
+ });
  var c = el('p4n_' + i);
  if(c) c.textContent = n + '/' + tot;
 }
@@ -6195,13 +6218,16 @@ function _condHTML(it){
 }
 function _tagHTML(it, fora){
  var nome = esc(it.nome || it.chave);
+ if(it.uniao)
+  return '<span class="oar-tag uniao" role="listitem" title="' + esc((it.de || []).join(' + ')) + '">'
+   + '<span class="oar-nome">' + nome + '</span></span>';
  if(fora){
-  var rv = 'devolver %s ao OAR'.replace('%s', it.nome || it.chave);
+  var rv = 'devolver %s ao STUDY'.replace('%s', it.nome || it.chave);
   return '<span class="oar-tag fora" role="listitem"><span class="oar-nome">' + nome + '</span>' + _condHTML(it)
    + '<button type="button" class="oar-volta" data-oar-volta="' + esc(it.chave) + '"'
    + ' aria-label="' + esc(rv) + '" title="' + esc(rv) + '">+</button></span>';
  }
- var rx = 'tirar %s do OAR desta série'.replace('%s', it.nome || it.chave);
+ var rx = 'tirar %s do STUDY desta série'.replace('%s', it.nome || it.chave);
  return '<span class="oar-tag" role="listitem"><span class="oar-nome">' + nome + '</span>' + _condHTML(it)
    + '<button type="button" class="oar-x" data-oar-x="' + esc(it.chave) + '"'
    + ' aria-label="' + esc(rx) + '" title="' + esc(rx) + '">&times;</button></span>';
@@ -6232,16 +6258,16 @@ function _pintarEntregas(i, d, focar){
  var oar = d.oar || {};
  var ests = (oar.estruturas || []).slice().sort(_porNome);
  var fora = (oar.fora || []).slice().sort(_porNome);
- h += '<div class="ent-sub"><b>' + ests.length + '</b> <span data-radai-frase>estruturas no OAR desta série</span></div>'
+ h += '<div class="ent-sub"><b>' + ests.length + '</b> <span data-radai-frase>estruturas no STUDY desta série</span></div>'
     + '<div class="oar-tags" role="list">' + ests.map(function(x){ return _tagHTML(x, false) }).join('') + '</div>';
  if(fora.length)
-  h += '<div class="ent-sub"><b>' + fora.length + '</b> <span data-radai-frase>fora do OAR desta série (continuam no FULL)</span></div>'
+  h += '<div class="ent-sub"><b>' + fora.length + '</b> <span data-radai-frase>fora do STUDY desta série (continuam no FULL)</span></div>'
      + '<div class="oar-tags" role="list">' + fora.map(function(x){ return _tagHTML(x, true) }).join('') + '</div>';
  if(d.nota) h += '<p class="ent-nota" data-radai-frase>' + esc(d.nota) + '</p>';
  uiHTML(alvo, h);
  var viva = el('p4v_' + i);
  if(viva){
-  var fv = '%s estruturas no OAR, %s fora'.replace('%s', ests.length)
+  var fv = '%s estruturas no STUDY, %s fora'.replace('%s', ests.length)
             .replace('%s', fora.length);
   if(window.uiTexto) window.uiTexto(viva, fv); else viva.textContent = fv;
  }
@@ -6349,6 +6375,12 @@ function _ajudaDoPainel(q){
    html: '<div class="tk-b"><p data-radai-frase>Cada protocolo liga só as tasks dele e desliga o resto. Mexer à mão numa task desliga o protocolo e liga a Seleção livre: daí em diante vale o que estiver marcado.</p></div>'});
   return;
  }
+ if(tipo === 'pp'){
+  perguntar({titulo: 'Protocolo próprio', ok: 'Fechar', so_ok: true,
+   html: '<div class="tk-b"><p data-radai-frase>O protocolo próprio é a seleção de estruturas do STUDY que a estação montou em Configurações, Estruturas e Protocolos, com as uniões e os nomes próprios dela.</p>'
+    + '<p data-radai-frase>Ligar a chave desliga os protocolos RT e a Seleção livre; as tasks que as estruturas do protocolo exigem ficam ligadas e travadas. O FULL não muda.</p></div>'});
+  return;
+ }
  if(tipo === 'comp'){
   var c = null; (d.comparacao || []).forEach(function(x){ if(x.cod === cod) c = x });
   if(!c) return;
@@ -6360,7 +6392,7 @@ function _ajudaDoPainel(q){
    return '<div data-radai-frase>' + esc(a) + '</div>' }).join('') + '</div>';
   if(c.ajuda) String(c.ajuda).split('\\n').forEach(function(l){
    if(l) h += '<p data-radai-frase>' + esc(l) + '</p>' });
-  h += '<p data-radai-frase>Cada modelo grava um arquivo próprio; nenhum entra no RadAI_OAR.</p>';
+  h += '<p data-radai-frase>Cada modelo grava um arquivo próprio; nenhum entra no RadAI_STUDY.</p>';
   if(c.licenca) h += '<div class="tk-l"><span class="tk-k" data-radai-frase>licença</span>'
                   + '<span class="tk-v">' + esc(c.licenca) + '</span></div>';
   perguntar({titulo: c.rotulo || c.cod, html: h + '</div>', ok: 'Fechar', so_ok: true});
@@ -6378,11 +6410,19 @@ document.addEventListener('change', function(ev){
   ligarProtocolo3d(s, e, t.getAttribute('data-p3d'), t.checked);
   _acertarPainel(i); pedirPrevia(i); pintarCarrinho(); return;
  }
+ if(t.classList.contains('p4-pp-ck') || t.classList.contains('p4-pp-sel')){
+  var selPp = cx.querySelector('select.p4-pp-sel');
+  if(t.classList.contains('p4-pp-ck')) ligarProtocoloProprio(s, e, t.checked, selPp ? selPp.value : '');
+  else if(e.pp) ligarProtocoloProprio(s, e, true, t.value);
+  _acertarPainel(i); pedirPrevia(i); pintarCarrinho(); return;
+ }
+ var tinhaPp = !!e.pp;
  if(t.classList.contains('p4-prot-ck')) ligarProtocolo(s, e, t.getAttribute('data-prot'), t.checked);
  else if(t.classList.contains('p4-livre-ck')) ligarSelecaoLivre(s, e, t.checked);
  else if(t.classList.contains('p4-task-ck')) chaveDaTask(s, e, t.getAttribute('data-task'), t.checked);
  else if(t.classList.contains('p4-comp-ck')) e.comp[t.getAttribute('data-comp')] = t.checked ? 1 : 0;
  else return;
+ if(tinhaPp !== !!e.pp){ _acertarPainel(i); pedirPrevia(i); pintarCarrinho(); return }
  _acertarChaves(i);
  pedirPrevia(i);
  pintarCarrinho();
@@ -6472,20 +6512,32 @@ def tag_da_fronteira(ident=u""):
     return radai_review.tag_da_fronteira(ident)
 
 
-ESCOLHA_HTML = u""" <label class="cam-rot" for="pasta">Caminho — pasta, ou o <b>.zip</b> do exame</label>
+ESCOLHA_HTML = u"""<div id="lt_form">
+ <label class="cam-rot" for="pasta">Caminho — pasta, ou o <b>.zip</b> do exame</label>
  <div class="linha cam-linha">
   <input id="pasta" autofocus spellcheck="false" placeholder="C:\\...  ou  \\\\servidor\\share\\...  ou  C:\\...\\EXAME.zip">
-  <button onclick="fpAbrir()">Procurar…</button>
+  @FAV@
+  <button id="lt_procurar" onclick="ltProcurar(this)">Procurar…</button>
   <button class="pri" onclick="varrer()">Varrer séries</button>
  </div>
+ <div class="lt-filtro">@FILTRO@</div>
  <div id="msg" role="status"></div>
+ <div id="lt_fora" class="lt-fora"></div>
  <div id="fpFora" class="fora-nota" style="display:none"></div>
+</div>
+<div id="lt_ler" hidden>
+ <div id="lt_ler_cx"></div>
+ <p class="lt-dica" data-radai-frase>Varrendo a pasta: o cabeçalho de cada arquivo é lido, e uma pasta grande pode levar alguns minutos.</p>
+ <div class="lt-ler-bts"><button type="button" id="lt_parar" onclick="ltParar()">Parar a leitura</button></div>
+</div>
 """
 
 
 def _escolha():
     import radai_ui
-    return radai_ui.popup_de_serie(u"cx1", ESCOLHA_HTML, titulo=u"Carregar imagens",
+    corpo = (ESCOLHA_HTML.replace(u"@FAV@", radai_ui.botao_favorita(u"pasta"))
+             .replace(u"@FILTRO@", radai_ui.filtro_de_data(u"lt_dias")))
+    return radai_ui.popup_de_serie(u"cx1", corpo, titulo=u"Carregar imagens",
                                    sozinho=True, largura=860)
 
 
@@ -6563,60 +6615,25 @@ def _no_threadpool(fn, *a, **kw):
     return run_in_threadpool(fn, *a, **kw)
 
 
-def _esc_html(t):
-    return (unicode(t) if str is bytes else str(t))         .replace(u"&", u"&amp;").replace(u"<", u"&lt;")         .replace(u">", u"&gt;").replace(u'"', u"&quot;")
-
-
 AVISO_SEM_STATUS_DIR = (u"Sem STATUS_DIR em Configurações, cada estação só "
                         u"enxerga a si mesma. Combine uma pasta comum com o "
                         u"TI para ver a noite inteira numa tela.")
 
 
 def _corpo_da_folha_do_turno():
-    linhas = []
-    protegidos = ()
-    try:
-        import radai_cleaner
-        servicos = tuple(getattr(radai_cleaner, "SERVICOS", ()) or ())
-        protegidos = tuple(getattr(radai_cleaner, "PROTEGIDOS", ()) or ())
-    except Exception:
-        servicos = ()
-    for nome, porque in servicos:
-        linhas.append(u'<li><b>%s</b> <span data-radai-frase>%s</span></li>'
-                      % (_esc_html(nome), _esc_html(porque)))
-    lista = (u"<ul class=\"ov-servicos\">%s</ul>" % u"".join(linhas)) if linhas else u""
-
-    clinicos = [p for p in protegidos
-                if p in ("vitrea", "varian", "eclipse", "aria", "mosaiq",
-                         "elekta", "monaco")]
-    nota = u""
-    if clinicos:
-        nota = (u'<p class="ov-nota"><b data-radai-frase>Nunca tocados:</b> '
-                u'%s — <span data-radai-frase>e o resto da lista de '
-                u'protegidos, que inclui o antivírus e os serviços do '
-                u'próprio Windows.</span></p>'
-                % _esc_html(u", ".join(c.capitalize() for c in clinicos)))
-
+    import radai_ui
     campos = (
         u'<div class="ov-campo">'
         u'<label class="ov-rot" for="ov_root" data-radai-frase>Pasta que o '
         u'turno varre</label>'
         u'<div class="ov-root"><input id="ov_root" spellcheck="false" '
         u'autocomplete="off" aria-describedby="ov_root_laudo">'
+        + radai_ui.botao_favorita(u"ov_root") +
         u'<button type="button" class="ui-bt" id="ov_root_bt" '
-        u'aria-expanded="false" aria-controls="ov_pastas">Procurar…</button>'
+        u'aria-haspopup="dialog">Procurar…</button>'
         u'</div>'
         u'<div class="ov-laudo" id="ov_root_laudo" role="status" '
         u'aria-live="polite"></div>'
-        u'<div class="ov-pastas" id="ov_pastas" hidden>'
-        u'<div class="ov-p-nav">'
-        u'<button type="button" class="ui-bt" id="ov_p_sobe" '
-        u'title="subir um nivel" aria-label="subir um nivel">&#8593;</button>'
-        u'<code id="ov_p_cam"></code>'
-        u'<button type="button" class="ui-bt pri" id="ov_p_usar" '
-        u'data-radai-frase>Usar esta pasta</button></div>'
-        u'<div class="ov-p-lista" id="ov_p_lista" role="listbox" '
-        u'aria-label="pastas"></div></div>'
         u'</div>'
         u'<div class="ov-dois">'
         u'<div class="ov-campo">'
@@ -6650,24 +6667,12 @@ def _corpo_da_folha_do_turno():
         u'Quando ela chegar nele, esta estação passa a varrer sozinha e a '
         u'pegar o caso mais recente primeiro.</p>'
         u'%(campos)s'
-        u'<div class="ov-escolha">'
-        u'<label class="ov-escolha-rot">'
-        u'<input type="checkbox" id="ov_pausar" checked>'
-        u'<span><b data-radai-frase>Pausar os serviços que disputam '
-        u'memória</b><br><span class="ov-sub" data-radai-frase>Eles voltam '
-        u'ao que estavam quando o turno for encerrado. Serviço que já estava '
-        u'parado continua parado.</span></span></label>'
-        u'<button type="button" class="ui-ajuda ov-ajuda" '
-        u'aria-label="ajuda" aria-expanded="false" aria-controls="ov_balao">'
-        u'?</button>'
-        u'<div class="ov-detalhe" id="ov_balao" hidden>'
-        u'<p class="ov-frota-aviso" id="ov_frota_aviso" '
-        u'data-radai-frase>%(frota)s</p>%(lista)s%(nota)s</div>'
-        u'</div>'
+        u'<p class="ov-frota-aviso" id="ov_frota_aviso" hidden '
+        u'data-radai-frase>%(frota)s</p>'
         u'<div class="ov-frota" id="ov_frota"></div>'
         u'%(fronteira)s'
         u'</div></template>'
-        % {"campos": campos, "lista": lista, "nota": nota,
+        % {"campos": campos,
            "frota": AVISO_SEM_STATUS_DIR,
            "fronteira": tag_da_fronteira()})
 
@@ -6827,84 +6832,6 @@ def listar_pastas_do_explorador(caminho="", busca="", ordem="nome",
     return r
 
 
-def ocupantes_da_placa(teto_s=8.0):
-    try:
-        import engine
-        exe = engine._achar_nvidia_smi()
-    except Exception:
-        exe = "nvidia-smi"
-    try:
-        import radai_cleaner as LP
-        ok, saida = LP._rodar(
-            [exe, "--query-compute-apps=pid,process_name,used_memory",
-             "--format=csv,noheader,nounits"], timeout=teto_s)
-        protegidos = tuple(getattr(LP, "PROTEGIDOS", ()) or ())
-    except Exception as e:
-        return {}, 0, u"%s: %s" % (type(e).__name__, e)
-    if not ok:
-        return {}, 0, (saida or u"nvidia-smi nao respondeu").strip()[:160]
-    por, n_prot = {}, 0
-    for linha in (saida or u"").splitlines():
-        partes = [p.strip() for p in linha.split(",")]
-        if len(partes) < 2 or not partes[1]:
-            continue
-        nome = os.path.basename(partes[1].replace("\\", "/")) or partes[1]
-        if any(p in nome.lower() for p in protegidos):
-            n_prot += 1
-            continue
-        mb = None
-        if len(partes) > 2:
-            try:
-                mb = int(float(partes[2]))
-            except Exception:
-                mb = None
-        if nome in por and por[nome] is not None and mb is not None:
-            por[nome] += mb
-        elif nome not in por:
-            por[nome] = mb
-    return por, n_prot, u""
-
-
-def sugestao_de_otimizacao():
-    d = {"turno_ativo": False, "n_pausados": 0, "placa": [],
-         "placa_erro": u"", "protegidos_na_placa": 0, "servicos": [],
-         "servicos_erro": u""}
-    try:
-        import radai_overnight
-        e = radai_overnight.estado()
-        d["turno_ativo"] = bool(e.get("ativo"))
-        d["n_pausados"] = int(e.get("n_pausados") or 0)
-    except Exception as e:
-        d["servicos_erro"] = u"%s: %s" % (type(e).__name__, e)
-    if d["turno_ativo"]:
-        return d
-    por, n_prot, erro = ocupantes_da_placa()
-    d["placa"] = [{"nome": n, "mb": mb} for n, mb in
-                  sorted(por.items(), key=lambda x: -(x[1] or 0))][:6]
-    d["protegidos_na_placa"] = n_prot
-    d["placa_erro"] = erro
-    try:
-        import radai_cleaner
-        d["servicos"] = [s["nome"] for s in radai_cleaner.estado_dos_servicos()
-                         if s.get("estado") == "rodando"]
-    except Exception as e:
-        d["servicos_erro"] = u"%s: %s" % (type(e).__name__, e)
-    return d
-
-
-def otimizar_estacao(ligar=True, log=None):
-    import radai_overnight
-    if ligar:
-        r = radai_overnight.iniciar(pausar_servicos=True, log=log)
-    else:
-        r = radai_overnight.encerrar(log=log, motivo="restaurada pela barra")
-    e = radai_overnight.estado()
-    return {"ok": bool(r.get("ok")), "msg": r.get("msg") or u"",
-            "turno_ativo": bool(e.get("ativo")),
-            "n_pausados": int(e.get("n_pausados") or 0),
-            "pausados": list(e.get("pausados") or [])}
-
-
 def conferencia_das_series(series, lista_explicita=None):
     md = _md()
     tasks, mot = [], dict((m, False) for m in MOTORES_DO_LOTE)
@@ -6969,15 +6896,6 @@ def montar(app, opcoes=None):
             pass
         return pag
 
-    @app.post("/api/lote/varrer")
-    async def _varrer(request: Request):
-        try:
-            c = await request.json() or {}
-            alvo = ((c or {}).get("pasta", "") or "").strip().strip('"')
-            return await _varredura(alvo)
-        except Exception as e:
-            return _erro(e)
-
     async def _varredura(alvo):
         try:
             if alvo.lower().endswith(".zip") and os.path.isfile(alvo):
@@ -6990,28 +6908,19 @@ def montar(app, opcoes=None):
                 varrer, alvo, modalidades=MODALIDADES_DA_TELA, min_cortes=piso,
                 marcadores=cfg.get("marcadores"), incluir_zips=True,
                 descartadas=curtas)
-            estudos = set(s.get("estudo") or s.get("pid") or "" for s in series)
-            um_exame = len(estudos) == 1 and len(series) > 1
-            try:
-                import radai_triage
-                series = radai_triage.escolher_para_contorno(series)
-            except Exception:
-                pass
-
-            try:
-                import radai_dicom as _rd
-                for _s in series:
-                    _s["espessura_laudo"] = _rd.laudo_de_espessura(
-                        _s.get("espessura_mm"))
-            except Exception:
-                pass
-            _com_bilhete(series)
-            return {"series": series, "pasta": alvo, "um_exame": um_exame,
-                    "piso": piso,
-                    "curtas": sorted((c["cortes"] for c in curtas),
-                                     reverse=True)[:20]}
+            return completar_da_tela(series, alvo, piso, curtas)
         except Exception as e:
             return _erro(e)
+
+    try:
+        import radai_varrer
+        radai_varrer.registrar("lote", _lote_ler, _lote_linhas,
+                               fechar=_lote_fechar, iniciar=_lote_iniciar,
+                               pular=pulada_no_lote)
+    except Exception as e:
+        if callable(cfg.get("log")):
+            cfg["log"](u"a varredura em segundo plano do Rodar agora nao "
+                       u"subiu: %s: %s" % (type(e).__name__, e))
 
     @app.post("/api/lote/selecao")
     async def _selecao(request: Request):
@@ -7116,7 +7025,7 @@ def montar(app, opcoes=None):
         alvo = str((c or {}).get("caminho") or "").strip().strip('"')
         import radai_config
         if not alvo:
-            return {"favorita": radai_config.chave_configurada("PASTA_FAVORITA")}
+            return {"favorita": radai_config.pasta_favorita()}
         if not os.path.isdir(alvo):
             return {"erro": u"esta pasta nao esta acessivel agora"}
         ok, erro = radai_config.escrever(radai_config.caminho_padrao(),
@@ -7203,28 +7112,10 @@ def montar(app, opcoes=None):
                 c.get("busca") or "", c.get("ordem") or "nome",
                 c.get("sentido") or "asc")
             if c.get("unidades"):
-                d["unidades"] = await _no_threadpool(unidades_do_explorador)
+                d["unidades"] = await _no_threadpool(
+                    unidades_do_explorador, 1.5,
+                    0.0 if c.get("fresco") is True else 20.0)
             return d
-        except Exception as e:
-            return _erro(e)
-
-    @app.get("/api/lote/otimizacao")
-    def _otimizacao():
-        try:
-            return sugestao_de_otimizacao()
-        except Exception as e:
-            return _erro(e)
-
-    @app.post("/api/lote/otimizar")
-    async def _otimizar(request: Request):
-        try:
-            c = await request.json() or {}
-        except Exception:
-            c = {}
-        try:
-            return await _no_threadpool(otimizar_estacao,
-                                        bool(c.get("ligar", True)),
-                                        cfg.get("log"))
         except Exception as e:
             return _erro(e)
 

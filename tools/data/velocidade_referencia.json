@@ -1,0 +1,458 @@
+{
+ "impressao": {
+  "full": {
+   "ordem": [
+    [
+     1,
+     "ChestWall_L_ai"
+    ],
+    [
+     2,
+     "ChestWall_R_ai"
+    ],
+    [
+     3,
+     "Skin_ai"
+    ],
+    [
+     4,
+     "Cavity_Abdomi_ai"
+    ],
+    [
+     5,
+     "A_Aorta_ai"
+    ],
+    [
+     6,
+     "autochthon_L_ai"
+    ],
+    [
+     7,
+     "autochthon_R_ai"
+    ],
+    [
+     8,
+     "Bag_Bowel_ai"
+    ],
+    [
+     9,
+     "Bag_Bowel_OAR_ai"
+    ],
+    [
+     10,
+     "clavicula_L_ai"
+    ],
+    [
+     11,
+     "clavicula_R_ai"
+    ],
+    [
+     12,
+     "Bowel_Large_ai"
+    ],
+    [
+     13,
+     "Esophagus_ai"
+    ],
+    [
+     14,
+     "GreatArteries_ai"
+    ],
+    [
+     15,
+     "GreatVeins_ai"
+    ],
+    [
+     16,
+     "Heart_ai"
+    ],
+    [
+     17,
+     "Heart_Model_ai"
+    ],
+    [
+     18,
+     "V_Venacava_I_ai"
+    ],
+    [
+     19,
+     "Kidney_L_ai"
+    ],
+    [
+     20,
+     "Kidney_R_ai"
+    ],
+    [
+     21,
+     "Liver_ai"
+    ],
+    [
+     22,
+     "Lung_L_ai"
+    ],
+    [
+     23,
+     "Lung_LLL_ai"
+    ],
+    [
+     24,
+     "Lung_RLL_ai"
+    ],
+    [
+     25,
+     "Lung_RML_ai"
+    ],
+    [
+     26,
+     "Lung_R_ai"
+    ],
+    [
+     27,
+     "Lung_LUL_ai"
+    ],
+    [
+     28,
+     "Lung_RUL_ai"
+    ],
+    [
+     29,
+     "Lungs_ai"
+    ],
+    [
+     30,
+     "Mediastinum_ai"
+    ],
+    [
+     31,
+     "Pericardium_ai"
+    ],
+    [
+     32,
+     "Rib05_L_ai"
+    ],
+    [
+     33,
+     "Rib08_L_ai"
+    ],
+    [
+     34,
+     "Rib05_R_ai"
+    ],
+    [
+     35,
+     "Rib08_R_ai"
+    ],
+    [
+     36,
+     "Ribs_L_ai"
+    ],
+    [
+     37,
+     "Ribs_R_ai"
+    ],
+    [
+     38,
+     "scapula_L_ai"
+    ],
+    [
+     39,
+     "scapula_R_ai"
+    ],
+    [
+     40,
+     "Bowel_Small_ai"
+    ],
+    [
+     41,
+     "SpinalCord_ai"
+    ],
+    [
+     42,
+     "Spleen_ai"
+    ],
+    [
+     43,
+     "Sternum_ai"
+    ],
+    [
+     44,
+     "Stomach_ai"
+    ],
+    [
+     45,
+     "V_Venacava_S_ai"
+    ],
+    [
+     46,
+     "Cavity_Thorac_ai"
+    ],
+    [
+     47,
+     "Trachea_ai"
+    ],
+    [
+     48,
+     "Vertebrae_T10_ai"
+    ],
+    [
+     49,
+     "Vertebrae_T12_ai"
+    ],
+    [
+     50,
+     "Vertebrae_T6_ai"
+    ],
+    [
+     51,
+     "Vertebrae_T8_ai"
+    ],
+    [
+     52,
+     "Vertebrae_T_ai"
+    ]
+   ],
+   "rois": {
+    "A_Aorta_ai": "ace3144d978896b758a48f6c",
+    "Bag_Bowel_OAR_ai": "2aa9994709817cfbf53f238e",
+    "Bag_Bowel_ai": "f2323f89f17929fb1d9049d8",
+    "Bowel_Large_ai": "b78ca831ac3ebd673b73120a",
+    "Bowel_Small_ai": "fe35896945ffdb6586ab701f",
+    "Cavity_Abdomi_ai": "fabf1cea362ccb0864b7a00b",
+    "Cavity_Thorac_ai": "4ad21ade5018788ea726afe8",
+    "ChestWall_L_ai": "c5aab971078f91ba4e65d1ef",
+    "ChestWall_R_ai": "8257c299d793f86924d9d3af",
+    "Esophagus_ai": "7df1ec8bb7d1219b42c48c1f",
+    "GreatArteries_ai": "92a2091d7dec532a9668db1f",
+    "GreatVeins_ai": "80afd67d41cff7315486e5c3",
+    "Heart_Model_ai": "3d46b47e12fa771e573650a7",
+    "Heart_ai": "43bc909d1d2009bf2c494827",
+    "Kidney_L_ai": "935eabb5c9ab4922820d0588",
+    "Kidney_R_ai": "4341a780c1f9f298a290caca",
+    "Liver_ai": "f234e6f6b56f80de662a7763",
+    "Lung_LLL_ai": "3f79b39f5eb09c762fed1065",
+    "Lung_LUL_ai": "ef7926b1e3f364d1843b3fc7",
+    "Lung_L_ai": "e56305460d2c383c8b0da65d",
+    "Lung_RLL_ai": "c292cb50633596fed13a86b3",
+    "Lung_RML_ai": "c552718582849d8761cc79ef",
+    "Lung_RUL_ai": "9b199b14754eee904dde605d",
+    "Lung_R_ai": "b8e21ca5a118585093cce275",
+    "Lungs_ai": "5f73883f8b53cabb163bd96d",
+    "Mediastinum_ai": "06c1727119bf6e54177bc630",
+    "Pericardium_ai": "205294b88ff29e67ab32297b",
+    "Rib05_L_ai": "3ad737e876c82dda4b219ba9",
+    "Rib05_R_ai": "3aa00ba073eb20a28ce96130",
+    "Rib08_L_ai": "a27ac6d8654f5eb9fd16d379",
+    "Rib08_R_ai": "b1d4b9d0c9a19ddf6b19710e",
+    "Ribs_L_ai": "9123a0d98884abd37735500c",
+    "Ribs_R_ai": "3d58040e6239f31dcbf87ec5",
+    "Skin_ai": "dc9da9474b464bcbf76cd4e5",
+    "SpinalCord_ai": "b2fcf64ee83c083633649e93",
+    "Spleen_ai": "a2f95c6c6a1b64e02e8a306d",
+    "Sternum_ai": "e15f2b6bd61b9d6580687377",
+    "Stomach_ai": "a8e0bb6726228331899ee0ee",
+    "Trachea_ai": "83d5fc989b8db7d6295bcb02",
+    "V_Venacava_I_ai": "ee3a29ae6ff35f39443b34f9",
+    "V_Venacava_S_ai": "f06fc7cfba25e8838a094b08",
+    "Vertebrae_T10_ai": "753dd45df283187b7965692b",
+    "Vertebrae_T12_ai": "2bc5d808a63b2a9e1fe09d50",
+    "Vertebrae_T6_ai": "845bcb38f798c001f9ad5b5e",
+    "Vertebrae_T8_ai": "fa6688fc1ba39fe415fca6ab",
+    "Vertebrae_T_ai": "e235e8d9a18073e6f2e80719",
+    "autochthon_L_ai": "1df704d7ab4238bcdc9eb0ac",
+    "autochthon_R_ai": "62d9eb642d1c334a4e052be9",
+    "clavicula_L_ai": "ff10c53fc06a3f970aaf02c7",
+    "clavicula_R_ai": "71851826fc40e43a252b82f9",
+    "scapula_L_ai": "3f8bb96f2895df6e4cfebc6b",
+    "scapula_R_ai": "10405f2028bb3f87465cc36c"
+   }
+  },
+  "mascaras": {
+   "ChestWall_L": "ae05b70838a0589a8916504b",
+   "ChestWall_R": "f4a6d73da0cf19d81ad859ad",
+   "Skin": "0abd437bb02090ca5ac81b50",
+   "abdominal_cavity": "24dc929fa96ab64d342a40fb",
+   "aorta": "56981cb20cd0d66c97c013f8",
+   "autochthon_left": "40e4489988bb9f2138b06b7d",
+   "autochthon_right": "f8554d0f030310819c098107",
+   "bag_bowel": "49cff4393129b9b7587162e1",
+   "bag_bowel_oar": "c52cf967d707871698987c9e",
+   "clavicula_left": "5821acd46ec629b45202a713",
+   "clavicula_right": "322724a855485a62f29663aa",
+   "colon": "71411082404ed2ba25a188d6",
+   "esophagus": "e693c7fe70e4fd4be00aea39",
+   "great_arteries": "56981cb20cd0d66c97c013f8",
+   "great_veins": "9cc5dec4d310001787ce6fe8",
+   "heart": "728b89ff4418a28610103f84",
+   "heart_model": "280eea1d7f9c52b2d9867a1a",
+   "inferior_vena_cava": "12e1b479f38bec3cac1e01b5",
+   "kidney_left": "3151889dc1b9a3b672bacc37",
+   "kidney_right": "65a514d5c0a67dbf7fb7bf09",
+   "liver": "64609c2d5e0c214651186090",
+   "lung_left": "67e7bfdd2d099ba776bbe1de",
+   "lung_lower_lobe_left": "603fdc4024bda3f59aa42bff",
+   "lung_lower_lobe_right": "ef4d5c1be655f512b7ece845",
+   "lung_middle_lobe_right": "ffa5c1b3ab3a8030bc05bc4e",
+   "lung_right": "76be437b236a09456e0ec699",
+   "lung_upper_lobe_left": "e20e7162b81f73ddcdeb8689",
+   "lung_upper_lobe_right": "6b96e9c0e23cb91ad412a2f3",
+   "lungs": "0d8d376fe643a5f59683cbee",
+   "mediastinum": "bcb1a81639a68ddc59c26aa6",
+   "pericardium": "ca36f794cf6e0945f8ab1ff2",
+   "rib_left_5": "8ecd2a2e0d855a3f94354d53",
+   "rib_left_8": "1f6bca09fedc85e8e3d6eaee",
+   "rib_right_5": "4ca3e0f88aeae9c255106fdd",
+   "rib_right_8": "d3abb66e4d988d0f175f7570",
+   "ribs_left": "04956cd3eb54b79b068d29f8",
+   "ribs_right": "fcea220c57dd9b4872a342af",
+   "scapula_left": "b8e3eb04fcf7e277ff7b2741",
+   "scapula_right": "94f87fd6bb05eab4706d060c",
+   "small_intestine": "a61e7a388d7ad637896c1b6f",
+   "spinal_cord": "9787fe706090bb382026550a",
+   "spleen": "6629271d3098d7f3eae39139",
+   "sternum": "2f8f84c35512ae8212df50c1",
+   "stomach": "89c7ed869299b8c955da4947",
+   "superior_vena_cava": "5164443379de9636e261f5d0",
+   "thoracic_cavity": "d261807438ac6a44a0f75c29",
+   "trachea": "d33196647f1bcc197fa4e1ea",
+   "vertebrae_T10": "e17ff03c4489f0a5e4d2225e",
+   "vertebrae_T12": "367b0101de97b8c31537a132",
+   "vertebrae_T6": "12b28c32ab74c1f7af6b7e00",
+   "vertebrae_T8": "47fd2d4705df556ea9f7e4c9",
+   "vertebrae_thoracic": "27cd9b7e94308d276cd40962"
+  },
+  "study": {
+   "ordem": [
+    [
+     1,
+     "ChestWall_L_ai"
+    ],
+    [
+     2,
+     "ChestWall_R_ai"
+    ],
+    [
+     3,
+     "Skin_ai"
+    ],
+    [
+     9,
+     "Bag_Bowel_OAR_ai"
+    ],
+    [
+     12,
+     "Bowel_Large_ai"
+    ],
+    [
+     13,
+     "Esophagus_ai"
+    ],
+    [
+     14,
+     "GreatArteries_ai"
+    ],
+    [
+     15,
+     "GreatVeins_ai"
+    ],
+    [
+     16,
+     "Heart_ai"
+    ],
+    [
+     19,
+     "Kidney_L_ai"
+    ],
+    [
+     20,
+     "Kidney_R_ai"
+    ],
+    [
+     21,
+     "Liver_ai"
+    ],
+    [
+     22,
+     "Lung_L_ai"
+    ],
+    [
+     26,
+     "Lung_R_ai"
+    ],
+    [
+     29,
+     "Lungs_ai"
+    ],
+    [
+     36,
+     "Ribs_L_ai"
+    ],
+    [
+     37,
+     "Ribs_R_ai"
+    ],
+    [
+     40,
+     "Bowel_Small_ai"
+    ],
+    [
+     41,
+     "SpinalCord_ai"
+    ],
+    [
+     42,
+     "Spleen_ai"
+    ],
+    [
+     43,
+     "Sternum_ai"
+    ],
+    [
+     44,
+     "Stomach_ai"
+    ],
+    [
+     47,
+     "Trachea_ai"
+    ],
+    [
+     52,
+     "Vertebrae_T_ai"
+    ]
+   ],
+   "rois": {
+    "Bag_Bowel_OAR_ai": "2aa9994709817cfbf53f238e",
+    "Bowel_Large_ai": "b78ca831ac3ebd673b73120a",
+    "Bowel_Small_ai": "fe35896945ffdb6586ab701f",
+    "ChestWall_L_ai": "c5aab971078f91ba4e65d1ef",
+    "ChestWall_R_ai": "8257c299d793f86924d9d3af",
+    "Esophagus_ai": "7df1ec8bb7d1219b42c48c1f",
+    "GreatArteries_ai": "92a2091d7dec532a9668db1f",
+    "GreatVeins_ai": "80afd67d41cff7315486e5c3",
+    "Heart_ai": "43bc909d1d2009bf2c494827",
+    "Kidney_L_ai": "935eabb5c9ab4922820d0588",
+    "Kidney_R_ai": "4341a780c1f9f298a290caca",
+    "Liver_ai": "f234e6f6b56f80de662a7763",
+    "Lung_L_ai": "e56305460d2c383c8b0da65d",
+    "Lung_R_ai": "b8e21ca5a118585093cce275",
+    "Lungs_ai": "5f73883f8b53cabb163bd96d",
+    "Ribs_L_ai": "9123a0d98884abd37735500c",
+    "Ribs_R_ai": "3d58040e6239f31dcbf87ec5",
+    "Skin_ai": "dc9da9474b464bcbf76cd4e5",
+    "SpinalCord_ai": "b2fcf64ee83c083633649e93",
+    "Spleen_ai": "a2f95c6c6a1b64e02e8a306d",
+    "Sternum_ai": "e15f2b6bd61b9d6580687377",
+    "Stomach_ai": "a8e0bb6726228331899ee0ee",
+    "Trachea_ai": "83d5fc989b8db7d6295bcb02",
+    "Vertebrae_T_ai": "e235e8d9a18073e6f2e80719"
+   }
+  }
+ },
+ "versoes": {
+  "SimpleITK": "2.5.6",
+  "numpy": "2.5.1",
+  "opencv": "5.0.0",
+  "pydicom": "3.0.2",
+  "rt_utils": "1.2.7",
+  "scipy": "1.18.0"
+ }
+}

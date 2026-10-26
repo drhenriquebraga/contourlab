@@ -1826,7 +1826,7 @@ def _construir_bag_bowel_oar(masks, grade, volume_hu=None, log=None,
 CAVA_INFERIOR = "inferior_vena_cava"
 
 
-def sem_a_cava_nos_cortes(m, cava, grade):
+def sem_a_cava_nos_cortes(m, cava, grade, protegido=None, modelo=None):
     from scipy import ndimage
     m = _bool_seguro(m)
     if cava is None:
@@ -1834,6 +1834,12 @@ def sem_a_cava_nos_cortes(m, cava, grade):
     cava = _bool_seguro(cava)
     if cava.shape != m.shape or not (m & cava).any():
         return m, 0
+    prot = None if protegido is None else _bool_seguro(protegido)
+    if prot is not None and prot.shape == m.shape and prot.any():
+        mh = None if modelo is None else _bool_seguro(modelo)
+        if mh is not None and mh.shape != m.shape:
+            mh = None
+        return _sem_a_cava_separada(m, cava, prot, mh, grade)
     eixo, _sinal = grade.eixo_sinal("inf")
     novo = m.copy()
     tirados = 0
@@ -1864,58 +1870,93 @@ def sem_a_cava_nos_cortes(m, cava, grade):
     return novo, tirados
 
 
-def sem_a_cava_fundida(m, cava, modelo, grade, margem_mm=None):
+def _sem_a_cava_separada(m, cava, prot, modelo, grade):
     from scipy import ndimage
-    m = _bool_seguro(m)
-    if cava is None or modelo is None:
-        return m, 0, 0
-    cava = _bool_seguro(cava)
-    modelo = _bool_seguro(modelo)
-    if cava.shape != m.shape or modelo.shape != m.shape:
-        return m, 0, 0
-    mm = (MARGEM_OAR_MM.get(CAVA_INFERIOR, 0.0) if margem_mm is None
-          else float(margem_mm))
-    if mm > 0 and cava.any():
-        import radai_geom
-        cava = radai_geom.expandir(
-            cava, dict((l, mm) for l in ("ant", "post", "esq", "dir")), grade)
-    if not (m & cava).any():
-        return m, 0, 0
     eixo, _sinal = grade.eixo_sinal("inf")
     vizinhanca = np.ones((3, 3), bool)
     novo = m.copy()
     tirados = 0
-    vazios = 0
     for k in range(m.shape[eixo]):
         fatia = np.take(novo, k, axis=eixo)
         cv = np.take(cava, k, axis=eixo)
         if not (fatia & cv).any():
             continue
-        mh = np.take(modelo, k, axis=eixo) & fatia
-        # GUARDA: a cava que encosta no coracao do modelo e a juncao com o
-        # atrio direito, e fica; so a cava separada dele sai.
-        if (ndimage.binary_dilation(cv, vizinhanca)
-                & np.take(modelo, k, axis=eixo)).any():
-            continue
-        rot, _n = ndimage.label(fatia, vizinhanca)
-        cruzam = [j for j in np.unique(rot[fatia & cv]) if j]
-        regiao = np.isin(rot, cruzam)
-        resto = regiao & ~(cv & ~mh)
-        rot2, _n2 = ndimage.label(resto, vizinhanca)
-        vivos = [j for j in np.unique(rot2[resto & mh]) if j]
-        fica = (np.isin(rot2, vivos) if vivos
-                else np.zeros_like(resto))
-        sai = regiao & ~fica
+        pr = np.take(prot, k, axis=eixo) & fatia
+        rot, n = ndimage.label(fatia, vizinhanca)
+        sai = np.zeros_like(fatia)
+        # GUARDA: o contorno com pericardio, coracao do modelo ou derrame
+        # nunca sai; dele sai so a cava de fora deles e o que so ela ligava.
+        for j in [j for j in np.unique(rot[fatia & cv]) if j]:
+            contorno = rot == j
+            if not (contorno & pr).any():
+                sai |= contorno
+                continue
+            resto = contorno & ~(cv & ~pr)
+            rot2, _n2 = ndimage.label(resto, vizinhanca)
+            vivos = [i for i in np.unique(rot2[resto & pr]) if i]
+            sai |= contorno & ~np.isin(rot2, vivos)
+        if modelo is not None and (np.take(modelo, k, axis=eixo)
+                                   & fatia).any():
+            soltos = [j for j in range(1, n + 1)
+                      if not (pr & (rot == j)).any()]
+            if soltos:
+                sai |= np.isin(rot, soltos)
         if not sai.any():
             continue
-        nova = fatia & ~sai
         idx = [slice(None)] * m.ndim
         idx[eixo] = k
-        novo[tuple(idx)] = nova
-        tirados += int(sai.sum())
-        if not nova.any():
-            vazios += 1
-    return novo, tirados, vazios
+        novo[tuple(idx)] = fatia & ~sai
+        tirados += int((fatia & sai).sum())
+    return novo, tirados
+
+
+def _caixa_com_folga(m, folga=2):
+    fora = []
+    for eixo in range(m.ndim):
+        outros = tuple(i for i in range(m.ndim) if i != eixo)
+        onde = np.flatnonzero(m.any(axis=outros))
+        fora.append(slice(max(0, int(onde.min()) - folga),
+                          min(m.shape[eixo], int(onde.max()) + 1 + folga)))
+    return tuple(fora)
+
+
+def _do_mapa(masks, chave, chave_da_receita=None, spec=None):
+    b = masks.get(chave) if hasattr(masks, "get") else None
+    if b is None and chave_da_receita:
+        b = (spec or {}).get(chave_da_receita)
+    return None if b is None else _bool_seguro(b)
+
+
+def _vizinhos_de_fora_do_pericardio(masks, forma, caixa):
+    fora, esofago = None, None
+    for k in list(masks or {}):
+        if str(k).startswith("_"):
+            continue
+        if _nomes.casa_prefixo(k, FORA_DO_PERICARDIO) is None:
+            continue
+        b = _bool_seguro(masks[k])
+        if b.shape != forma:
+            continue
+        b = b[caixa]
+        fora = b.copy() if fora is None else (fora | b)
+        if _nomes.casa_prefixo(k, ("esophagus",)) is not None:
+            esofago = b.copy() if esofago is None else (esofago | b)
+    return fora, esofago
+
+
+def _componentes_com_protegido(m, prot):
+    import radai_geom
+    from scipy import ndimage
+    if not m.any():
+        return m
+    rot, n = ndimage.label(m, ndimage.generate_binary_structure(3, 1))
+    if n <= 1:
+        return m
+    if prot is not None:
+        vivos = [j for j in np.unique(rot[m & prot]) if j]
+        if vivos:
+            return np.isin(rot, vivos)
+    return radai_geom.maior_componente(m, conectividade=1)
 
 
 def _acabamento_do_coracao(nome, m, masks, grade, log=None, spec=None):
@@ -1923,8 +1964,10 @@ def _acabamento_do_coracao(nome, m, masks, grade, log=None, spec=None):
     import radai_constructs as _rc
     m = _bool_seguro(m)
     der = _rc._derrame_pericardico(masks)
+    der_lim = None
     if der is not None and m.any():
-        m = m | radai_geom.limitar_por_plano(der, "sup", m, grade=grade)
+        der_lim = radai_geom.limitar_por_plano(der, "sup", m, grade=grade)
+        m = m | der_lim
     cheio = radai_geom.preencher_buracos(m, por_fatia=True)
     um = radai_geom.maior_componente(cheio, conectividade=1)
     vx = float(np.prod(grade.spacing)) / 1000.0
@@ -1936,34 +1979,48 @@ def _acabamento_do_coracao(nome, m, masks, grade, log=None, spec=None):
                 u"volume (-%.2f cm3)" % (nome, ganho * vx, caiu * vx))
     if not um.any():
         return m, None, {}
-    # GUARDA: no corte com dois contornos, o que cruza a veia cava inferior
-    # sai e fica o do apice; a cava nao entra no coracao por baixo.
-    cava = masks.get(CAVA_INFERIOR) if hasattr(masks, "get") else None
-    if cava is None:
-        cava = (spec or {}).get("cava_inferior")
-    um, tirados = sem_a_cava_nos_cortes(um, cava, grade)
+    modelo = _do_mapa(masks, _nomes.CHAVE_DO_CORACAO_DO_MODELO,
+                      "coracao_do_modelo", spec)
+    prot = None
+    for b in (_do_mapa(masks, _rc.CHAVE_PERICARDIO), modelo, der_lim):
+        if b is not None and b.shape == um.shape:
+            prot = b.copy() if prot is None else (prot | b)
+    cava = _do_mapa(masks, CAVA_INFERIOR, "cava_inferior", spec)
+    eixo, _sinal = grade.eixo_sinal("inf")
+    outros = tuple(i for i in range(um.ndim) if i != eixo)
+    tinha = um.any(axis=outros)
+    # GUARDA: a cava inferior sai so onde esta separada do coracao (fora do
+    # pericardio, do coracao do modelo e do derrame); sem nenhum deles, so
+    # vale a regra dos dois contornos.
+    um, tirados = sem_a_cava_nos_cortes(um, cava, grade, protegido=prot,
+                                        modelo=modelo)
     info = {}
     if tirados:
+        vazios = int((tinha & ~um.any(axis=outros)).sum())
         info["cava_inferior_tirada_cm3"] = round(tirados * vx, 2)
+        info["cortes_so_de_cava"] = vazios
         if log:
-            log(u"   `%s`: nos cortes com dois contornos, o que cruza a veia "
-                u"cava inferior saiu (-%.2f cm3); ficou o do apice"
-                % (nome, tirados * vx))
-    modelo = (masks.get(_nomes.CHAVE_DO_CORACAO_DO_MODELO)
-              if hasattr(masks, "get") else None)
-    if modelo is None:
-        modelo = (spec or {}).get("coracao_do_modelo")
-    um, fundida, vazios = sem_a_cava_fundida(um, cava, modelo, grade)
-    if fundida:
-        info["cava_fundida_tirada_cm3"] = round(fundida * vx, 2)
-        info["cortes_so_de_cava"] = int(vazios)
-        if log:
-            log(u"   `%s`: nos cortes em que a veia cava inferior nao encosta "
-                u"no coracao do modelo, a cava (com a margem de %.1f mm) saiu "
-                u"do contorno unico (-%.2f cm3); %d corte(s) so de cava "
-                u"ficaram vazios; o apice fica"
-                % (nome, MARGEM_OAR_MM.get(CAVA_INFERIOR, 0.0),
-                   fundida * vx, vazios))
+            log(u"   `%s`: a veia cava inferior saiu onde estava separada do "
+                u"coracao (-%.2f cm3); %d corte(s) so de cava ficaram vazios; "
+                u"nenhum pixel do pericardio, do coracao do modelo nem do "
+                u"derrame saiu" % (nome, tirados * vx, vazios))
+    if um.any():
+        caixa = _caixa_com_folga(um)
+        viz, eso = _vizinhos_de_fora_do_pericardio(masks, um.shape, caixa)
+        if viz is not None and (um[caixa] & viz).any():
+            dentro = um[caixa]
+            sai = dentro & viz
+            um = um.copy()
+            um[caixa] = dentro & ~viz
+            n_eso = int((sai & eso).sum()) if eso is not None else 0
+            n_viz = int(sai.sum()) - n_eso
+            info["esofago_tirado_cm3"] = round(n_eso * vx, 2)
+            info["vizinhos_tirados_cm3"] = round(n_viz * vx, 2)
+            if log:
+                log(u"   `%s`: sem o esofago (-%.2f cm3) e os outros vizinhos "
+                    u"de fora do pericardio (-%.2f cm3), depois do derrame e "
+                    u"do preenchimento" % (nome, n_eso * vx, n_viz * vx))
+    um = _componentes_com_protegido(um, prot)
     return um, None, info
 
 
@@ -2291,6 +2348,87 @@ CONSTRUCOES[_ONDE_ENTRAM:_ONDE_ENTRAM] = [
              "acabamento": _acabamento_do_anus,
              "descricao": u"Anus: a Bag_Bowel_ai do ultimo corte do osso "
                           u"pelvico para baixo (recorte do FULL)."}}}]
+del _ONDE_ENTRAM
+
+
+def _construir_atms(masks, grade, volume_hu=None, log=None, cru=None):
+    import radai_constructs as _rc
+    return _saida_das_construcoes(_rc.atms(masks, grade, log=log, cru=cru))
+
+
+def _construir_mandibula(masks, grade, volume_hu=None, log=None, cru=None):
+    import radai_constructs as _rc
+    return _saida_das_construcoes({_rc.CHAVE_MANDIBULA: _rc.mandibula_cheia(
+        masks, grade, log=log, cru=cru)})
+
+
+def _construir_laringe(masks, grade, volume_hu=None, log=None, cru=None):
+    import radai_constructs as _rc
+    return _saida_das_construcoes({_rc.CHAVE_LARINGE: _rc.laringe(
+        masks, grade, log=log, cru=cru)})
+
+
+def _construir_pulmoes(masks, grade, volume_hu=None, log=None, cru=None):
+    import radai_constructs as _rc
+    return _saida_das_construcoes({_rc.CHAVE_PULMOES: _rc.pulmoes(
+        masks, grade, log=log, cru=cru)})
+
+
+def _acabamento_dos_pulmoes(nome, m, masks, grade, log=None):
+    import radai_constructs as _rc
+    soma, _lados = _rc.soma_dos_pulmoes(masks)
+    if soma is None or soma.shape != _bool_seguro(m).shape:
+        return None, None, {}
+    return soma, None, {}
+
+
+_CONTEM_DA_LARINGE = ("cricoid_cartilage", "thyroid_cartilage", "larynx_air",
+                      "hypopharynx", "pharyngeal_constrictor")
+
+# GUARDA: a ATM roda antes da mandibula cheia (le o condilo da mandibula do
+# modelo); as quatro entram antes da Bag_Bowel_OAR, que continua a ultima.
+_ONDE_ENTRAM = [i for i, _c in enumerate(CONSTRUCOES)
+                if _c.get("cod") == "bag_bowel_oar"][0]
+CONSTRUCOES[_ONDE_ENTRAM:_ONDE_ENTRAM] = [
+    {"cod": "atm", "funcao": _construir_atms,
+     "momento": "no_fim", "exige_hu": False, "exige": ("mandible",),
+     "saidas": {
+         "tmj_left": {
+             "suavizar_mm": 0.0, "recortar_por": (),
+             "contem": ("mandible", "skull"),
+             "descricao": u"TMJ_L: o condilo esquerdo da mandibula com 1 mm "
+                          u"em 3D (recorte do FULL)."},
+         "tmj_right": {
+             "suavizar_mm": 0.0, "recortar_por": (),
+             "contem": ("mandible", "skull"),
+             "descricao": u"TMJ_R: o condilo direito da mandibula com 1 mm "
+                          u"em 3D (recorte do FULL)."}}},
+    {"cod": "mandibula", "funcao": _construir_mandibula,
+     "momento": "no_fim", "exige_hu": False, "exige": ("mandible",),
+     "saidas": {
+         "mandible": {
+             "suavizar_mm": None, "sem_perder_area": True,
+             "recortar_por": (), "contem": ("teeth_lower",),
+             "descricao": u"Bone_Mandible: a mandibula cheia, com os dentes "
+                          u"inferiores quando a serie os tem."}}},
+    {"cod": "laringe", "funcao": _construir_laringe,
+     "momento": "no_fim", "exige_hu": False,
+     "exige": ("hyoid", "cricoid_cartilage"),
+     "saidas": {
+         "larynx": {
+             "suavizar_mm": 0.0, "recortar_por": (),
+             "contem": _CONTEM_DA_LARINGE,
+             "descricao": u"Larynx: cricoide, cartilagem tireoide, ar da "
+                          u"laringe e hipofaringe, do corte abaixo do hioide "
+                          u"ao ultimo da cricoide (recorte do FULL)."}}},
+    {"cod": "pulmoes", "funcao": _construir_pulmoes,
+     "momento": "no_fim", "exige_hu": False,
+     "exige": ("lung_left|lung_right",),
+     "saidas": {
+         "lungs": {
+             "suavizar_mm": 0.0, "recortar_por": (), "contem": ("lung_",),
+             "acabamento": _acabamento_dos_pulmoes,
+             "descricao": u"Lungs: a soma dos pulmoes (recorte do FULL)."}}}]
 del _ONDE_ENTRAM
 
 
@@ -2864,6 +3002,8 @@ def preparar_full(masks, grade=None, log=None, volume_hu=None, modalidade=None,
     for cod, motivo in meta["nao_sairam"]:
         _diz(u"FULL: `%s` nao saiu — %s" % (cod, motivo))
     meta["fora_do_oar_por_regiao"] = fora_do_oar_por_regiao(fora, grade)
+    meta["fora_do_oar_por_regiao"].update(
+        fora_do_oar_por_modalidade(fora, modalidade))
     if _alvo is not None:
         fora = _filtrar_para(fora, _alvo, meta, _diz)
     return fora, meta
@@ -3037,7 +3177,26 @@ FORA_DO_OAR_NA_REGIAO = {
         "styloid_process_right", "teeth_lower", "teeth_upper", "tongue",
         "zygomatic_arch_left", "zygomatic_arch_right"),
 }
-FORA_DO_OAR_NO_PESCOCO_SEM_TORAX = ("great_arteries", "great_veins")
+# GUARDA: na cabeca e pescoco sem torax o entregue leva o Lungs_ai (a soma) no
+# lugar dos dois pulmoes, que ficam no FULL.
+FORA_DO_OAR_NO_PESCOCO_SEM_TORAX = ("great_arteries", "great_veins",
+                                    "lung_left", "lung_right")
+FORA_DO_OAR_NA_MODALIDADE = {"MR": ("brain",)}
+MOTIVO_FORA_DO_OAR_NA_MODALIDADE = {
+    ("MR", "brain"): u"o encefalo da RM fica so no FULL (RM: o Brain_ai do "
+                     u"entregue e o da TC)",
+}
+
+
+def fora_do_oar_por_modalidade(masks, modalidade):
+    mod = str(modalidade or "").strip().upper()
+    mod = "MR" if mod in ("MR", "MRI", "RM") else mod
+    fora = {}
+    for k in FORA_DO_OAR_NA_MODALIDADE.get(mod, ()):
+        if _nomes.achar(masks, k) is not None:
+            fora[k] = MOTIVO_FORA_DO_OAR_NA_MODALIDADE.get(
+                (mod, k), u"fica so no FULL nesta modalidade (%s)" % mod)
+    return fora
 
 
 def fora_do_oar_por_regiao(masks, grade):
@@ -4271,6 +4430,8 @@ GRUPOS_DISJUNTOS = {
 CONTIDAS_EM = {
     "eye_lens_left": "eye_left",
     "eye_lens_right": "eye_right",
+    "brain_ventricles": "brain",
+    "brain_midline": "brain",
 }
 
 
@@ -5184,11 +5345,29 @@ def _falha_da_task(task, log_ts, desde, jid, codigo=None, frase=None,
                        tempo_limite=tempo_limite, volume_conferido=True)
 
 
+def _caixas_dos_rotulos(arr):
+    a = np.asarray(arr)
+    if a.ndim == 0 or a.dtype.kind not in "iu":
+        return None
+    if a.dtype.kind == "i" and a.size and int(a.min()) < 0:
+        return None
+    try:
+        from scipy.ndimage import find_objects
+        return find_objects(a)
+    except Exception:
+        return None
+
+
 class MasksCruas(object):
 
     def __init__(self, arr, idx_to_name):
         self._arr = arr
-        presentes = set(int(v) for v in np.unique(arr)) - {0}
+        self._caixas = _caixas_dos_rotulos(arr)
+        if self._caixas is not None:
+            presentes = set(i + 1 for i, cx in enumerate(self._caixas)
+                            if cx is not None)
+        else:
+            presentes = set(int(v) for v in np.unique(arr)) - {0}
         self._nomes = dict((idx_to_name[i], i) for i in sorted(presentes)
                            if i in idx_to_name
                            and idx_to_name[i] not in ROTULOS_DE_ACHADO)
@@ -5206,7 +5385,15 @@ class MasksCruas(object):
         return k in self._nomes
 
     def __getitem__(self, k):
-        return self._arr == self._nomes[k]
+        i = self._nomes[k]
+        if self._caixas is None:
+            return self._arr == i
+        # GUARDA: a comparacao so na caixa do rotulo; fora dela o rotulo nao
+        # existe, e o volume inteiro sai falso como na comparacao inteira.
+        m = np.zeros(np.shape(self._arr), dtype=bool)
+        cx = self._caixas[i - 1]
+        m[cx] = np.asarray(self._arr)[cx] == i
+        return m
 
 
 TASKS_PERMITIDAS = {
@@ -6069,7 +6256,7 @@ def run_ts_task(ref, task, device, jid, timeout_s=None, log_path=None,
     # GUARDA: a recusa fica na funcao que executa, e nao so nas portas.
     conferir_volume_contornavel(ref, modalidade=modalidade_da_task(task))
     timeout_s = TIMEOUT_TASK_S if timeout_s is None else timeout_s
-    work = Path(tempfile.mkdtemp(prefix="ts_"))
+    work = Path(tempfile.mkdtemp(prefix="radai_ts_"))
     log_ts = Path(log_path) if log_path else (work / ("%s.log" % task))
     try:
         nii = work / "in.nii.gz"
@@ -7120,7 +7307,7 @@ _FAMILIA_POR_PALAVRA = (
     ("myocard", "cardiaco"), ("atrium", "cardiaco"),
     ("lung", "ar"), ("trachea", "ar"), ("bronch", "ar"), ("airway", "ar"),
     ("sinus", "ar"), ("nasal_cavity", "ar"), ("pharynx", "ar"),
-    ("larynx", "ar"),
+    ("larynx", "ar"), ("tmj", "osso"),
     ("aorta", "arteria"), ("artery", "arteria"), ("_arteries", "arteria"),
     ("carotid", "arteria"), ("iliac_artery", "arteria"),
     ("subclavian_artery", "arteria"), ("pulmonary_artery", "arteria"),
@@ -7361,6 +7548,9 @@ TG263 = {
     "colon_sigmoid": "Colon_Sigmoid",
     "bowel_bag": "Spc_Bowel",
     "larynx": "Larynx",
+    "tmj_left": "TMJ_L",
+    "tmj_right": "TMJ_R",
+    "lungs": "Lungs",
     "spinal_canal": "SpinalCanal",
     "breast_left": "Breast_L",
     "breast_right": "Breast_R",
@@ -7496,6 +7686,7 @@ TG263 = {
 
 TG263_A_CONFERIR = {
     "brain_ventricles", "brain_midline",
+    "tmj_left", "tmj_right",
     "kidney_cyst_left", "kidney_cyst_right",
     "pleural_effusion", "pleural_effusion_left", "pleural_effusion_right",
     "pericardial_effusion",
@@ -7781,6 +7972,98 @@ def _espacamento_no_plano(clean_dir, padrao=1.0):
         return padrao, padrao
 
 
+TOLERANCIA_DO_EIXO_AXIAL = 1e-5
+
+
+def plano_da_serie(clean_dir):
+    try:
+        files = sort_dcm([str(f) for f in Path(clean_dir).glob("*.dcm")])
+        if not files:
+            return None
+        ref = pydicom.dcmread(files[len(files) // 2], stop_before_pixels=True,
+                              force=True)
+        iop = [float(v) for v in ref.ImageOrientationPatient]
+    except Exception:
+        return None
+    if len(iop) < 6:
+        return None
+    linha = np.asarray(iop[:3], dtype=np.float64)
+    coluna = np.asarray(iop[3:6], dtype=np.float64)
+    # GUARDA: corte axial (normal no eixo z) fica no caminho de sempre, em
+    # (x, y) e sem giro nenhum: o RTSTRUCT dele sai byte a byte o mesmo.
+    if (abs(linha[2]) <= TOLERANCIA_DO_EIXO_AXIAL
+            and abs(coluna[2]) <= TOLERANCIA_DO_EIXO_AXIAL):
+        return None
+    if np.linalg.norm(linha) < 0.5:
+        return None
+    linha = linha / np.linalg.norm(linha)
+    coluna = coluna - coluna.dot(linha) * linha
+    if np.linalg.norm(coluna) < 0.5:
+        return None
+    coluna = coluna / np.linalg.norm(coluna)
+    return np.vstack([linha, coluna, np.cross(linha, coluna)])
+
+
+TAG_DOS_PONTOS = 0x30060050
+
+
+def _gravar_pontos(c, valores):
+    if not isinstance(c, pydicom.dataset.Dataset):
+        c.ContourData = valores
+        return
+    # GUARDA: o valor entra ja convertido (texto formatado ou float); o DS do
+    # pydicom, um objeto validado por numero, custava mais que o acabamento.
+    c[TAG_DOS_PONTOS] = pydicom.dataelem.DataElement(
+        TAG_DOS_PONTOS, "DS", valores, already_converted=True)
+
+
+def _pontos_lidos_em_float(ds):
+    for rc in getattr(ds, "ROIContourSequence", None) or []:
+        for c in getattr(rc, "ContourSequence", None) or []:
+            if not isinstance(c, pydicom.dataset.Dataset):
+                continue
+            el = c.get_item(TAG_DOS_PONTOS)
+            if (el is None or not getattr(el, "is_raw", False)
+                    or el.VR not in (None, "DS") or not el.value):
+                continue
+            # GUARDA: o mesmo corte do texto que o pydicom faz no DS lido;
+            # o que ele nao leria igual fica cru e segue pelo caminho dele.
+            itens = bytes(el.value).decode("latin-1").strip().rstrip(
+                " \x00").split("\\")
+            if len(itens) < 2:
+                continue
+            try:
+                valores = [float(x) for x in itens]
+            except ValueError:
+                continue
+            _gravar_pontos(c, valores)
+
+
+def _girar_contornos(ds, matriz, formatar=False):
+    for rc in getattr(ds, "ROIContourSequence", None) or []:
+        for c in getattr(rc, "ContourSequence", None) or []:
+            dados = getattr(c, "ContourData", None)
+            if not dados:
+                continue
+            v = np.asarray([float(x) for x in dados], dtype=np.float64)
+            if v.size % 3:
+                continue
+            q = v.reshape(-1, 3).dot(matriz.T).ravel()
+            _gravar_pontos(c, ["%.4f" % float(x) for x in q] if formatar
+                           else [float(x) for x in q])
+
+
+def para_o_plano_da_serie(ds, plano):
+    if plano is not None:
+        _girar_contornos(ds, np.asarray(plano, dtype=np.float64))
+
+
+def de_volta_ao_paciente(ds, plano):
+    if plano is not None:
+        _girar_contornos(ds, np.asarray(plano, dtype=np.float64).T,
+                         formatar=True)
+
+
 def _suavizar_contornos(ds, dxdy=None, suavizar=True, formatados=None,
                         prontos=None):
     if not hasattr(ds, "ROIContourSequence"):
@@ -7827,10 +8110,10 @@ def _suavizar_contornos(ds, dxdy=None, suavizar=True, formatados=None,
                     continue
                 p[:, :2] = xy
                 if formatados is not None:
-                    c.ContourData = ["%.4f" % float(x) for x in p.ravel()]
+                    _gravar_pontos(c, ["%.4f" % float(x) for x in p.ravel()])
                     formatados.add(id(c))
                 else:
-                    c.ContourData = [float(x) for x in p.ravel()]
+                    _gravar_pontos(c, [float(x) for x in p.ravel()])
                 feitos += 1
             except Exception:
                 continue
@@ -7899,7 +8182,7 @@ def _decimar_contornos(ds, tol_mm, minimo=MIN_PONTOS_DECIMADO,
                 ad += radai_geom.area_poligono(q)
                 laudo["contornos"] += 1
                 if q.shape[0] != p.shape[0]:
-                    c.ContourData = ["%.4f" % float(x) for x in q.ravel()]
+                    _gravar_pontos(c, ["%.4f" % float(x) for x in q.ravel()])
                     c.NumberOfContourPoints = int(q.shape[0])
             except Exception:
                 continue
@@ -8044,7 +8327,7 @@ def _reparar_contornos_degenerados(ds, clean_dir, dxdy=None,
             if n >= MIN_PONTOS_CONTORNO and not contorno_degenerado(p):
                 continue
             q = contorno_dos_pixels(p, dx, dy)
-            c.ContourData = [float(v) for v in q.ravel()]
+            _gravar_pontos(c, [float(v) for v in q.ravel()])
             c.NumberOfContourPoints = int(len(q))
             if reparados_ids is not None:
                 reparados_ids.add(id(c))
@@ -8321,7 +8604,8 @@ ESTRUTURAS_DELGADAS = ("optic_nerve_left", "optic_nerve_right",
                        "optic_chiasm",
                        "pharyngeal_constrictor_superior",
                        "pharyngeal_constrictor_middle",
-                       "pharyngeal_constrictor_inferior")
+                       "pharyngeal_constrictor_inferior",
+                       "thyroid_gland")
 for _n in ESTRUTURAS_DELGADAS:
     SUAVIZACAO[_n] = 0.0
 for _n in (
@@ -8805,9 +9089,10 @@ def rotulo_do_tps(valor):
 
 AVISO_DO_TPS_NAO_ESCOLHIDO = (
     u"ALERTA: TPS de destino nao escolhido (TPS_DESTINO vazio): o RTSTRUCT "
-    u"foi gravado como %s, com o furo do anel num segundo contorno. Num TPS "
-    u"que precisa da linha divisoria nos aneis (%s), a Skin e a ChestWall "
-    u"chegariam preenchidas. Escolha o TPS no primeiro uso do painel."
+    u"foi gravado como %s, o padrao, com o furo do anel num segundo "
+    u"contorno. Num TPS que precisa da linha divisoria nos aneis (%s), a "
+    u"Skin e a ChestWall chegariam preenchidas. O anel se ajusta em "
+    u"Configuracoes > Geral (Ajuste de contornos em anel)."
     % (rotulo_do_tps(TPS_ECLIPSE), rotulo_do_tps(TPS_MONACO)))
 
 
@@ -8961,7 +9246,8 @@ def _fundir_furos_por_fenda(ds):
             for k, (c, _p) in enumerate(grupo):
                 if id(c) in saem or pontos[k] is grupo[k][1]:
                     continue
-                c.ContourData = ["%.4f" % float(v) for v in pontos[k].ravel()]
+                _gravar_pontos(c, ["%.4f" % float(v)
+                                   for v in pontos[k].ravel()])
                 c.NumberOfContourPoints = int(len(pontos[k]))
         if saem:
             rc.ContourSequence = pydicom.Sequence(
@@ -9041,7 +9327,7 @@ def acabar_contornos(ds, originais=None, dxdy=None):
                 laudo["degenerados"] += 1
                 mudou = True
             if mudou:
-                c.ContourData = ["%.4f" % float(x) for x in q.ravel()]
+                _gravar_pontos(c, ["%.4f" % float(x) for x in q.ravel()])
                 c.NumberOfContourPoints = int(len(q))
     return laudo
 
@@ -9182,9 +9468,10 @@ def gravar_dicom_em_fluxo(ds, caminho, implicit_vr=None, little_endian=None):
 
 
 def gravar_rtstruct(ds, caminho, tps=None, log=None, originais=None,
-                    dxdy=None, charset=None):
+                    dxdy=None, charset=None, plano=None):
     laudo = acabamento_para_o_tps(ds, tps, originais=originais, dxdy=dxdy,
                                   charset=charset)
+    de_volta_ao_paciente(ds, plano)
     gravar_dicom_em_fluxo(ds, caminho, implicit_vr=True, little_endian=True)
     _frase = frase_dos_contornos(laudo.get("contornos"))
     if log and _frase:
@@ -9218,22 +9505,33 @@ def _desconto_do_entregue():
         return False
 
 
-ROTULO_OAR_FAST = "RadAI_OAR_Fast"
+def _rotulo_do_entregue(modo=None):
+    import radai_sets as _rs
+    return _rs.ROTULO_STUDY_FAST if modo == "fast" else _rs.ROTULO_STUDY
+
+
+def _frase_do_sufixo(sufixo, proprios):
+    if proprios:
+        return ("Sufixo '%s' nos nomes padrao; %d estrutura(s) com nome "
+                "proprio da estacao: o nome padrao esta na descricao de cada "
+                "ROI (ROIDescription)." % (sufixo, int(proprios)))
+    return "Sufixo '%s' em todos os nomes." % sufixo
 
 
 def _textos_do_conjunto(rotulo, versao_worker, tem_nv, sufixo_do_conjunto,
                         suspeitas, suavizadas, suavizar_mm, modo=None,
-                        decimar_mm=None):
+                        decimar_mm=None, proprios=0):
     if modo == "fast":
         return _textos_do_oar_fast(rotulo, versao_worker, sufixo_do_conjunto,
                                    suspeitas, suavizadas, suavizar_mm,
-                                   decimar_mm)
-    rotulo_ = (rotulo or "RadAI_OAR")[:16]
+                                   decimar_mm, proprios=proprios)
+    entregue = _rotulo_do_entregue()
+    rotulo_ = (rotulo or entregue)[:16]
     nome = ("RadAI auto-contorno (sugestao nao aprovada)" if not rotulo else
-            "%s - estudo, nao e o entregue" % rotulo)[:64]
+            "%s - nao e o entregue" % rotulo)[:64]
     descricao = (
-        ("Conjunto %s: material de estudo e comparacao entre motores. O "
-         "conjunto entregue para o plano e o RadAI_OAR. " % rotulo
+        ("Conjunto %s: material de revisao e comparacao entre motores. O "
+         "conjunto entregue para o plano e o %s. " % (rotulo, entregue)
          if rotulo else "")
         + "Estruturas geradas automaticamente por Radioterapia.AI "
         "(TotalSegmentator%s). SUGESTAO NAO APROVADA: revisao e aprovacao "
@@ -9246,8 +9544,7 @@ def _textos_do_conjunto(rotulo, versao_worker, tem_nv, sufixo_do_conjunto,
                  "proposito, para comparacao. Ver ROIGenerationDescription "
                  "de cada estrutura." % (SUFIXO_AI, SUFIXO_NV))
                 if tem_nv else
-                ("Sufixo '%s' em todos os nomes."
-                 % (sufixo_do_conjunto or SUFIXO_AI)))
+                _frase_do_sufixo(sufixo_do_conjunto or SUFIXO_AI, proprios))
         + ((" %d estrutura(s) com volume abaixo do anatomicamente "
             "plausivel: %s. Entregues assim mesmo, para revisao."
             % (len(suspeitas), ", ".join(x[0] for x in suspeitas[:6])))
@@ -9257,7 +9554,8 @@ def _textos_do_conjunto(rotulo, versao_worker, tem_nv, sufixo_do_conjunto,
            "muda e a forma da borda." % (suavizar_mm or 0.0)
            if suavizadas else ""))
     serie = ("RadAI auto-contorno - SUGESTAO NAO APROVADA" if not rotulo else
-             "%s - estudo (o entregue e RadAI_OAR)" % rotulo)[:64]
+             "%s - nao e o entregue (o entregue e %s)"
+             % (rotulo, entregue))[:64]
     return {"StructureSetLabel": rotulo_, "StructureSetName": nome,
             "StructureSetDescription": descricao, "SeriesDescription": serie,
             "SeriesNumber": 900 if not rotulo else 901}
@@ -9277,23 +9575,22 @@ def _fora_do_fast_por_extenso():
 
 
 def _textos_do_oar_fast(rotulo, versao_worker, sufixo_do_conjunto, suspeitas,
-                        suavizadas, suavizar_mm, decimar_mm):
-    rotulo_ = (rotulo or ROTULO_OAR_FAST)[:16]
-    nome = "RadAI OAR_Fast (sugestao nao aprovada)"[:64]
+                        suavizadas, suavizar_mm, decimar_mm, proprios=0):
+    rotulo_ = (rotulo or _rotulo_do_entregue("fast"))[:16]
+    nome = "RadAI STUDY_Fast (sugestao nao aprovada)"[:64]
     descricao = (
-        "Conjunto entregue do modo FAST (%s): as estruturas do RadAI_OAR "
+        "Conjunto entregue do modo FAST (%s): as estruturas do %s "
         "menos %s, montadas pelo mesmo pos-processamento "
         "do FULL, com os compostos suavizados INTEIROS (e nao a partir das "
         "partes)%s. NAO e copia de um FULL, e nao ha FULL ao lado dele. "
-        % (rotulo_, _fora_do_fast_por_extenso(),
+        % (rotulo_, _rotulo_do_entregue(), _fora_do_fast_por_extenso(),
            (", e os pontos de cada contorno reduzidos (Douglas-Peucker, "
             "%.1f mm)" % float(decimar_mm)) if decimar_mm else "")
         + "Estruturas geradas automaticamente por Radioterapia.AI "
         "(TotalSegmentator%s). SUGESTAO NAO APROVADA: revisao e aprovacao "
-        "sao ato medico e continuam obrigatorias no TPS. "
-        "Sufixo '%s' em todos os nomes."
+        "sao ato medico e continuam obrigatorias no TPS. %s"
         % (" / worker " + versao_worker if versao_worker else "",
-           sufixo_do_conjunto or SUFIXO_AI)
+           _frase_do_sufixo(sufixo_do_conjunto or SUFIXO_AI, proprios))
         + ((" %d estrutura(s) com volume abaixo do anatomicamente "
             "plausivel: %s. Entregues assim mesmo, para revisao."
             % (len(suspeitas), ", ".join(x[0] for x in suspeitas[:6])))
@@ -9301,7 +9598,7 @@ def _textos_do_oar_fast(rotulo, versao_worker, sufixo_do_conjunto, suspeitas,
         + (" Contornos SUAVIZADOS (escala %.1f, por estrutura): o contorno "
            "NAO e a saida crua do modelo." % (suavizar_mm or 0.0)
            if suavizadas else ""))
-    serie = "RadAI OAR_Fast - SUGESTAO NAO APROVADA"[:64]
+    serie = "RadAI STUDY_Fast - SUGESTAO NAO APROVADA"[:64]
     return {"StructureSetLabel": rotulo_, "StructureSetName": nome,
             "StructureSetDescription": descricao, "SeriesDescription": serie,
             "SeriesNumber": 900}
@@ -9438,6 +9735,8 @@ def _suavizar_construcoes(masks, grade, suavizar_mm, construcoes, detalhe,
                 antes_n = int(m.sum())
                 s = radai_geom.suavizar(m, mm, grade)
                 if s.any():
+                    if spec.get("sem_perder_area"):
+                        s = s | m
                     comum = int((m & s).sum())
                     det = (str(nome), float(mm), antes_n, int(s.sum()),
                            (comum / float(antes_n)) if antes_n else 1.0)
@@ -9624,7 +9923,62 @@ def _mascara_para_o_rt_utils(m):
     return np.transpose(m, (1, 2, 0))
 
 
+RT_UTILS_DA_MONTAGEM_RAPIDA = "1.2.7"
+_RT_UTILS_INSTALADO = []
+
+
+def _rt_utils_instalado():
+    if not _RT_UTILS_INSTALADO:
+        try:
+            from importlib import metadata
+            _RT_UTILS_INSTALADO.append(metadata.version("rt_utils"))
+        except Exception:
+            _RT_UTILS_INSTALADO.append(u"")
+    return _RT_UTILS_INSTALADO[0]
+
+
+def _adicionar_roi(rt, mb, nome, cor):
+    # GUARDA: replica o add_roi do rt_utils 1.2.7 com o ContourData ja
+    # convertido; outra versao do rt_utils segue pelo add_roi dele.
+    if _rt_utils_instalado() != RT_UTILS_DA_MONTAGEM_RAPIDA:
+        rt.add_roi(mask=mb, name=nome, color=cor)
+        return
+    from rt_utils import ds_helper, image_helper
+    from rt_utils.utils import ROIData
+    if (mb.dtype != bool or mb.ndim != 3
+            or len(rt.series_data) != np.shape(mb)[2]):
+        rt.validate_mask(mb)
+    roi = ROIData(mb, cor, len(rt.ds.StructureSetROISequence) + 1, nome,
+                  rt.frame_of_reference_uid, "", False, True, 0)
+    seq = pydicom.sequence.Sequence()
+    for fatia, contornos in zip(rt.series_data,
+                                image_helper.get_contours_coords(
+                                    roi, rt.series_data)):
+        for dados in contornos:
+            imagem = pydicom.dataset.Dataset()
+            imagem.ReferencedSOPClassUID = fatia.SOPClassUID
+            imagem.ReferencedSOPInstanceUID = fatia.SOPInstanceUID
+            imagens = pydicom.sequence.Sequence()
+            imagens.append(imagem)
+            c = pydicom.dataset.Dataset()
+            c.ContourImageSequence = imagens
+            c.ContourGeometricType = "CLOSED_PLANAR"
+            c.NumberOfContourPoints = len(dados) / 3
+            _gravar_pontos(c, dados)
+            seq.append(c)
+    rc = pydicom.dataset.Dataset()
+    rc.ROIDisplayColor = roi.color
+    rc.ContourSequence = seq
+    rc.ReferencedROINumber = str(roi.number)
+    rt.ds.ROIContourSequence.append(rc)
+    rt.ds.StructureSetROISequence.append(
+        ds_helper.create_structure_set_roi(roi))
+    rt.ds.RTROIObservationsSequence.append(
+        ds_helper.create_rtroi_observation(roi))
+
+
 PREFIXO_TEMP_DO_OAR = "radai_oar_"
+PREFIXO_TEMP_DO_RS = "radai_rs_"
 
 
 def _renumerar_pelo_plano(ds, numero_por_nome):
@@ -9652,10 +10006,10 @@ class ConjuntoPreparado(object):
         self._gravar = gravar
         self._gravar_selecao = gravar_selecao
 
-    def gravar_selecao(self, chaves, destino, versao_worker=u""):
+    def gravar_selecao(self, chaves, destino, versao_worker=u"", **extra):
         if self._gravar_selecao is None:
             raise RuntimeError(u"o conjunto preparado ja foi liberado")
-        return self._gravar_selecao(chaves, destino, versao_worker)
+        return self._gravar_selecao(chaves, destino, versao_worker, **extra)
 
     def gravar(self):
         if self._gravar is None:
@@ -9670,7 +10024,8 @@ class ConjuntoPreparado(object):
         self._gravar_selecao = None
 
 
-def selecionar_do_full(preparo, mapa_nomes, permitidos, log=None, meta=None):
+def selecionar_do_full(preparo, mapa_nomes, permitidos, log=None, meta=None,
+                       nomes=None, unioes=None):
     if not hasattr(preparo, "gravar_selecao"):
         raise TypeError(u"o OAR sai do FULL preparado (build_rtstruct com "
                         u"adiar=True), e nao de um arquivo")
@@ -9684,8 +10039,14 @@ def selecionar_do_full(preparo, mapa_nomes, permitidos, log=None, meta=None):
     conferir_sem_body(list(ficam.values()))
     m = dict(meta or {})
     destino = Path(tempfile.mkdtemp(prefix=PREFIXO_TEMP_DO_OAR)) / "RS.dcm"
+    _extra = {}
+    if nomes:
+        _extra["nomes"] = dict(nomes)
+    if unioes:
+        _extra["unioes"] = list(unioes)
     gravadas, etapas = preparo.gravar_selecao(set(ficam), destino,
-                                              m.get("versao_worker", u""))
+                                              m.get("versao_worker", u""),
+                                              **_extra)
     if isinstance(meta, dict):
         meta["etapas"] = list(etapas)
     if log:
@@ -9720,6 +10081,92 @@ def _salvar_sem_escrever_no_console(rt, caminho):
         raise Exception("Cannot write to file path '%s'" % destino)
 
 
+PREFIXO_DA_UNIAO = "uniao:"
+
+
+def _nomes_do_entregue(entradas, plano, masks, numero_no_plano, nomes, unioes,
+                       construcoes, densidade, log=None):
+    import radai_sets as _rs
+
+    def _diz(m):
+        if log:
+            try:
+                log(m)
+            except Exception:
+                pass
+    padrao_da_chave = dict((e[0], e[1]) for e in plano)
+    num = dict(numero_no_plano or {})
+    padroes = [e[1] for e in entradas]
+    unioes_ok, vistos = [], set(p.lower() for p in padroes)
+    if unioes and not isinstance(masks, dict):
+        _diz(u"STUDY: as unioes do protocolo proprio nao foram montadas (as "
+             u"mascaras finais nao estao na memoria)")
+        unioes = ()
+    for u in (unioes or ()):
+        nome = u"%s" % ((u or {}).get("nome") or u"")
+        de = [k for k in ((u or {}).get("de") or ()) if k in masks]
+        motivo = _rs.motivo_do_nome_proprio(nome)
+        if motivo is None and nome.lower() in vistos:
+            motivo = _rs.MOTIVO_REPETIDO
+        if motivo is None and not de:
+            motivo = u"nenhuma estrutura da uniao saiu nesta serie"
+        if motivo:
+            _diz(u"STUDY: a uniao `%s` nao entra (%s)" % (nome, motivo))
+            continue
+        vistos.add(nome.lower())
+        unioes_ok.append((nome, de))
+    aceitos, recusas = _rs.validar_nomes_proprios(
+        nomes or {}, padroes, outros=[n for n, _d in unioes_ok])
+    for p, motivo in sorted(recusas.items()):
+        _diz(u"STUDY: o nome proprio de %s foi recusado (%s); sai com o nome "
+             u"padrao" % (p, motivo))
+    descr, novas, uni = {}, [], []
+    for nm, nome_final, cor, de_onde in entradas:
+        novo = aceitos.get(nome_final, nome_final)
+        if novo != nome_final and nome_final in num:
+            num[novo] = num[nome_final]
+        descr[novo] = _rs.descricao_da_roi(nome_final)
+        novas.append((nm, novo, cor, de_onde))
+    prox = len(plano)
+    for nome, de in unioes_ok:
+        m = None
+        for k in de:
+            b = _bool_seguro(masks[k])
+            m = b.copy() if m is None else (m | b)
+        if m is None or not m.any():
+            _diz(u"STUDY: a uniao `%s` saiu vazia nesta serie; nao entra"
+                 % nome)
+            continue
+        chave = PREFIXO_DA_UNIAO + nome
+        masks[chave] = m
+        densidade[chave] = None
+        if isinstance(construcoes, dict):
+            construcoes[chave] = {"contem": tuple(de), "suavizar_mm": 0.0,
+                                  "recortar_por": (), "descricao": u""}
+        prox += 1
+        num[nome] = prox
+        partes = [padrao_da_chave.get(k, k) for k in de]
+        descr[nome] = _rs.descricao_da_uniao(partes)
+        novas.append((chave, nome, list(_color(nome)), "uniao"))
+        uni.append(chave)
+        _diz(u"STUDY: uniao `%s` = %s" % (nome, u" + ".join(partes)))
+    if aceitos:
+        _diz(u"STUDY: %d estrutura(s) com nome proprio da estacao; o nome "
+             u"padrao vai na descricao de cada ROI" % len(aceitos))
+    return novas, num, descr, uni, len(aceitos)
+
+
+def _soltar_unioes(chaves, masks, construcoes, densidade):
+    for k in (chaves or ()):
+        try:
+            masks.pop(k, None)
+        except Exception:
+            pass
+        densidade.pop(k, None)
+        if isinstance(construcoes, dict):
+            construcoes.pop(k, None)
+
+
 def build_rtstruct(clean_dir, masks, tasks=None, versao_worker="", origem=None,
                    suavizar_mm=0.0, rotulo=None,
                    derivar=False, log=None, cru=False, descontar=False,
@@ -9727,7 +10174,7 @@ def build_rtstruct(clean_dir, masks, tasks=None, versao_worker="", origem=None,
                    observacoes=None, construcoes=None, exigir_grade=False,
                    selecao=None, meta=None, externo=None, serie=None,
                    gravar=None, compostos_inteiros=False, decimar_mm=None,
-                   modo=None, adiar=False):
+                   modo=None, adiar=False, nomes_do_entregue=None):
     conferir_sem_body(list(masks or []))
     if cru and masks is not None:
         # GUARDA: o indice 26 nunca sai em RTSTRUCT, nem no cru.
@@ -9746,7 +10193,7 @@ def build_rtstruct(clean_dir, masks, tasks=None, versao_worker="", origem=None,
         _t_etapa[0] = agora
 
     if modo != "fast":
-        rt_path = Path(tempfile.mkdtemp()) / "RS.dcm"
+        rt_path = Path(tempfile.mkdtemp(prefix=PREFIXO_TEMP_DO_RS)) / "RS.dcm"
     else:
         rt_path = Path(tempfile.mkdtemp(prefix=PREFIXO_TEMP_DO_OAR)) / "RS.dcm"
     # GUARDA: sem o sufixo por ROI duas chaves com o mesmo nome TG-263 (a
@@ -9780,7 +10227,7 @@ def build_rtstruct(clean_dir, masks, tasks=None, versao_worker="", origem=None,
                         u"desconto, suavizacao, sobreposicao, volume nem "
                         u"densidade" % (type(_e_grade).__name__,
                                         str(_e_grade)[:100],
-                                        rotulo or "RadAI_OAR"))
+                                        rotulo or _rotulo_do_entregue()))
                 except Exception:
                     pass
     _modal = modalidade or (None if cru else _modalidade_da_serie(clean_dir))
@@ -9943,6 +10390,16 @@ def build_rtstruct(clean_dir, masks, tasks=None, versao_worker="", origem=None,
                     except Exception:
                         pass
         suavizadas = len(detalhe)
+        try:
+            # GUARDA: a contencao roda de novo nas mascaras finais; a
+            # suavizacao do continente deixaria o contido para fora dele.
+            aplicar_contencao(masks, grade, log=log)
+        except Exception as exc:
+            if log:
+                try:
+                    log("contencao depois da suavizacao: %s" % str(exc)[:140])
+                except Exception:
+                    pass
     _marca(u"suavizacao (duas passadas) e compostos",
            rodou=bool(grade is not None and suavizar_mm and suavizar_mm > 0
                       and not cru))
@@ -10035,11 +10492,16 @@ def build_rtstruct(clean_dir, masks, tasks=None, versao_worker="", origem=None,
     _densidade = {}
 
     def _escrever(destino, chaves=None, versao_oar=None, _marca=_marca,
-                  zerar=False):
+                  zerar=False, nomes=None, unioes=None):
         do_oar = versao_oar is not None
         if zerar:
             _marca(u"gravacao", rodou=False)
         entradas = [e for e in plano if chaves is None or e[0] in chaves]
+        _num, _descr, _unioes, _n_prop = numero_no_plano, {}, [], 0
+        if do_oar or modo == "fast":
+            entradas, _num, _descr, _unioes, _n_prop = _nomes_do_entregue(
+                entradas, plano, masks, numero_no_plano, nomes,
+                unioes if do_oar else None, construcoes, _densidade, log)
         rt = RTStructBuilder.create_new(dicom_series_path=str(clean_dir))
         mapa_nomes, mapa_origem, nao_entraram = {}, {}, []
         _ultimo_beat = time.time()
@@ -10055,7 +10517,7 @@ def build_rtstruct(clean_dir, masks, tasks=None, versao_worker="", origem=None,
             mapa_origem[nome_final] = de_onde
             mb = _mascara_para_o_rt_utils(_bool_seguro(masks[nm]))
             try:
-                rt.add_roi(mask=mb, name=nome_final, color=cor)
+                _adicionar_roi(rt, mb, nome_final, cor)
                 mapa_nomes[nm] = nome_final
             except Exception as _e1:
                 nao_entraram.append(
@@ -10180,8 +10642,10 @@ def build_rtstruct(clean_dir, masks, tasks=None, versao_worker="", origem=None,
         del rt
         gc.collect()
         ds = pydicom.dcmread(str(destino))
-        _renumerar_pelo_plano(ds, numero_no_plano)
+        _pontos_lidos_em_float(ds)
+        _renumerar_pelo_plano(ds, _num)
         ROTULO_MOTOR = {"nosso": "Radioterapia.AI / TotalSegmentator",
+                        "uniao": "Radioterapia.AI (uniao, protocolo proprio)",
                         "ts": "TotalSegmentator (rotulos crus)",
                         "nv": "Radioterapia.AI / NV-Segment-CT",
                         "cads": "Radioterapia.AI / CADS",
@@ -10193,10 +10657,18 @@ def build_rtstruct(clean_dir, masks, tasks=None, versao_worker="", origem=None,
             de_onde = mapa_origem.get(str(getattr(roi, "ROIName", "")), "nosso")
             roi.ROIGenerationAlgorithm = "AUTOMATIC"
             roi.ROIGenerationDescription = ROTULO_MOTOR.get(de_onde, de_onde)[:64]
+            _d_roi = _descr.get(str(getattr(roi, "ROIName", "")))
+            if _d_roi:
+                roi.ROIDescription = _para_dicom(_d_roi)[:1024]
         try:
             _dxdy = _espacamento_no_plano(clean_dir)
         except Exception:
             _dxdy = None
+        # GUARDA: o acabamento todo (reparo, meio pixel, Taubin, reducao,
+        # cruzamento, fenda) roda no plano da imagem da serie; a volta ao
+        # paciente e no gravar_rtstruct, depois do ultimo passo.
+        _plano = plano_da_serie(clean_dir)
+        para_o_plano_da_serie(ds, _plano)
         # GUARDA: contorno degenerado se REPARA, nunca se descarta (a ROI
         # sumiria calada); e antes da formatacao dos cortes.
         _pelos_pixels = set()
@@ -10212,7 +10684,8 @@ def build_rtstruct(clean_dir, masks, tasks=None, versao_worker="", origem=None,
             for rc in ds.ROIContourSequence:
                 for c in getattr(rc, "ContourSequence", []):
                     if hasattr(c, "ContourData") and id(c) not in _formatados:
-                        c.ContourData = ["%.4f" % float(v) for v in c.ContourData]
+                        _gravar_pontos(c, ["%.4f" % float(v)
+                                           for v in c.ContourData])
         _laudo_dec = None
         if decimar_mm and float(decimar_mm) > 0 and not cru:
             _num_da_roi = dict(
@@ -10275,13 +10748,15 @@ def build_rtstruct(clean_dir, masks, tasks=None, versao_worker="", origem=None,
             if do_oar:
                 _txt = _textos_do_conjunto(None, versao_oar, tem_nv,
                                            sufixo_do_conjunto, suspeitas,
-                                           suavizadas, suavizar_mm)
+                                           suavizadas, suavizar_mm,
+                                           proprios=_n_prop)
             else:
                 _txt = _textos_do_conjunto(rotulo, versao_worker, tem_nv,
                                            sufixo_do_conjunto, suspeitas,
                                            suavizadas, suavizar_mm, modo=modo,
                                            decimar_mm=(decimar_mm if _laudo_dec
-                                                       is not None else None))
+                                                       is not None else None),
+                                           proprios=_n_prop)
             ds.StructureSetLabel = _txt["StructureSetLabel"]
             ds.StructureSetName = _txt["StructureSetName"]
             ds.StructureSetDescription = _txt["StructureSetDescription"]
@@ -10425,7 +10900,7 @@ def build_rtstruct(clean_dir, masks, tasks=None, versao_worker="", origem=None,
                 pass
         _lg = gravar_rtstruct(ds, destino, log=(None if do_oar else log),
                               originais=_originais, dxdy=_dxdy,
-                              charset=_charset)
+                              charset=_charset, plano=_plano)
         del _originais
         _frase = frase_dos_contornos(_lg.get("contornos"))
         if do_oar and log and _frase:
@@ -10436,9 +10911,14 @@ def build_rtstruct(clean_dir, masks, tasks=None, versao_worker="", origem=None,
         return mapa_nomes
 
     if not adiar:
-        return str(rt_path), _escrever(rt_path)
+        try:
+            return str(rt_path), _escrever(
+                rt_path, nomes=(nomes_do_entregue if modo == "fast" else None))
+        except BaseException:
+            shutil.rmtree(str(rt_path.parent), ignore_errors=True)
+            raise
 
-    def _gravar_selecao(chaves, destino, versao_oar):
+    def _gravar_selecao(chaves, destino, versao_oar, nomes=None, unioes=None):
         etapas_oar = []
         relogio = [time.time()]
 
@@ -10447,10 +10927,17 @@ def build_rtstruct(clean_dir, masks, tasks=None, versao_worker="", origem=None,
             if rodou:
                 etapas_oar.append((nome, agora - relogio[0]))
             relogio[0] = agora
-        nomes = _escrever(destino, chaves=set(chaves),
-                          versao_oar=versao_oar or u"",
-                          _marca=_marca_do_oar)
-        return nomes, etapas_oar
+        try:
+            gravadas = _escrever(destino, chaves=set(chaves),
+                                 versao_oar=versao_oar or u"",
+                                 _marca=_marca_do_oar, nomes=nomes,
+                                 unioes=unioes)
+        finally:
+            if isinstance(masks, dict):
+                _soltar_unioes([k for k in list(masks)
+                                if str(k).startswith(PREFIXO_DA_UNIAO)],
+                               masks, construcoes, _densidade)
+        return gravadas, etapas_oar
 
     def _gravar_o_full():
         return str(rt_path), _escrever(rt_path, zerar=True)

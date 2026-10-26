@@ -3,10 +3,13 @@ import io
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 
+_INICIO = time.time()
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _cleanup
 import _componentes
@@ -22,6 +25,7 @@ sys.path.insert(0, APP)
 
 _ACERVO = tempfile.mkdtemp(prefix="radai_reg_acervo_")
 os.environ["RADAI_CALIB_DIR"] = _ACERVO
+os.environ["RADAI_REGISTRO_DIR"] = tempfile.mkdtemp(prefix="radai_reg_registro_")
 
 _ok = 0
 _falhas = []
@@ -112,6 +116,221 @@ def teste_o_pseudonimo_e_estavel_e_nao_reversivel():
     checar(u"  e nao bate com sha256(uid), que seria testavel por candidato",
            p1 != hashlib.sha256(UID.encode()).hexdigest()[:8])
     checar(u"UID vazio nao explode", RG.pseudonimo("", a) == "semuid00")
+
+
+def _segredo_em_pasta_que_sincroniza(fonte_do_segredo=None):
+    import radai_records as RG
+    nuvem = temp()
+    base = os.path.join(nuvem, u"registro")
+    guardado = os.environ.get("RADAI_RAIZES_NUVEM")
+    original = RG._segredo
+    try:
+        os.environ["RADAI_RAIZES_NUVEM"] = nuvem
+        if fonte_do_segredo is not None:
+            ns = dict(RG.__dict__)
+            exec(fonte_do_segredo, ns)
+            RG._segredo = ns["_segredo"]
+        p1 = RG.pseudonimo(UID, base)
+        p2 = RG.pseudonimo(UID, base)
+        gravou = os.path.isfile(os.path.join(base, RG.NOME_SEGREDO))
+        aviso = RG.aviso_do_segredo(base) if hasattr(RG, "aviso_do_segredo") else u""
+    finally:
+        RG._segredo = original
+        if guardado is None:
+            os.environ.pop("RADAI_RAIZES_NUVEM", None)
+        else:
+            os.environ["RADAI_RAIZES_NUVEM"] = guardado
+    return {"gravou": gravou, "estavel": p1 == p2, "aviso": aviso, "p": p1}
+
+
+def teste_a_chave_nao_vai_para_pasta_que_sincroniza():
+    secao(u"a chave do pseudonimo nunca e gravada em pasta que sincroniza")
+    import radai_records as RG
+    m = _segredo_em_pasta_que_sincroniza()
+    checar(u"numa pasta que sincroniza, a chave nao vai para o disco",
+           m["gravou"] is False, repr(m))
+    checar(u"  e o pseudonimo continua estavel dentro do processo",
+           m["estavel"] and len(m["p"]) == 8, repr(m))
+    checar(u"  e o registro diz por que, com a variavel que tira de la",
+           u"RADAI_REGISTRO_DIR" in (m["aviso"] or u""), repr(m))
+    fora = temp()
+    p = RG.pseudonimo(UID, fora)
+    checar(u"fora da nuvem a chave e gravada como antes (estavel entre processos)",
+           os.path.isfile(os.path.join(fora, RG.NOME_SEGREDO)) and len(p) == 8)
+    checar(u"  e la o registro nao avisa nada", RG.aviso_do_segredo(fora) == u"")
+    velha = (u"def _segredo(base=''):\n"
+             u"    p = os.path.join(_garantir(raiz(base)), NOME_SEGREDO)\n"
+             u"    s = hashlib.sha256(os.urandom(64)).hexdigest().encode('ascii')\n"
+             u"    with io.open(p, 'wb') as f:\n"
+             u"        f.write(s)\n"
+             u"    return s\n")
+    mi = _segredo_em_pasta_que_sincroniza(velha)
+    checar(u"  (isca) a versao que grava sempre poe a chave na pasta da nuvem",
+           mi["gravou"] is True, repr(mi))
+
+
+RAIZES_SO_PELA_VARIAVEL = (
+    u"def raizes_espelhadas():\n"
+    u"    base = os.environ.get('LOCALAPPDATA') or ''\n"
+    u"    db = os.path.join(base, *_DRIVE_DB) if base else ''\n"
+    u"    if not (db and os.path.isfile(db)):\n"
+    u"        return tuple(_raizes_declaradas())\n"
+    u"    return tuple(_raizes_declaradas()) + tuple(_raizes_do_banco(db))\n")
+
+
+def _banco_do_drive_falso(A, perfil, raiz_espelhada):
+    import sqlite3
+    db = os.path.join(perfil, *A._DRIVE_DB)
+    os.makedirs(os.path.dirname(db))
+    con = sqlite3.connect(db)
+    try:
+        con.execute("create table roots (last_seen_absolute_path text)")
+        con.execute("insert into roots values (?)", (raiz_espelhada,))
+        con.commit()
+    finally:
+        con.close()
+
+
+def _chave_com_a_localappdata_trocada(raizes_fonte=None):
+    import radai_archive as A
+    import radai_records as RG
+    caixa = temp()
+    perfil = os.path.join(caixa, u"perfil")
+    espelhada = os.path.join(caixa, u"espelhada")
+    _banco_do_drive_falso(A, perfil, espelhada)
+    vazia = os.path.join(caixa, u"lad_vazia")
+    os.makedirs(vazia)
+    base = os.path.join(espelhada, u"registro")
+    guardado = dict((k, os.environ.get(k))
+                    for k in ("LOCALAPPDATA", "RADAI_RAIZES_NUVEM"))
+    local_real, raizes_real = A._local_do_perfil, A.raizes_espelhadas
+    try:
+        os.environ["LOCALAPPDATA"] = vazia
+        os.environ.pop("RADAI_RAIZES_NUVEM", None)
+        A._local_do_perfil = lambda: perfil
+        if raizes_fonte is not None:
+            ns = dict(vars(A))
+            exec(raizes_fonte, ns)
+            A.raizes_espelhadas = ns["raizes_espelhadas"]
+        A._CACHE_RAIZES["quando"] = None
+        p = RG.pseudonimo(UID, base)
+        gravou = os.path.isfile(os.path.join(base, RG.NOME_SEGREDO))
+    finally:
+        A._local_do_perfil, A.raizes_espelhadas = local_real, raizes_real
+        A._CACHE_RAIZES["quando"] = None
+        for k, v in guardado.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    return {"gravou": gravou, "p": p}
+
+
+def teste_a_chave_nao_vai_para_a_nuvem_com_a_localappdata_trocada():
+    secao(u"a chave nao vai para a nuvem com a LOCALAPPDATA trocada")
+    m = _chave_com_a_localappdata_trocada()
+    checar(u"com a LOCALAPPDATA trocada (como a bateria que sobe o vigia), "
+           u"a pasta que o Drive do perfil espelha continua recusada",
+           m["gravou"] is False and len(m["p"]) == 8, repr(m))
+    mi = _chave_com_a_localappdata_trocada(RAIZES_SO_PELA_VARIAVEL)
+    checar(u"  (isca) lendo o Drive so pela variavel, a chave vai para a "
+           u"pasta da nuvem", mi["gravou"] is True, repr(mi))
+
+
+def teste_sem_como_conferir_a_chave_fica_na_memoria():
+    secao(u"sem como conferir a pasta, a chave fica na memoria")
+    import radai_archive as A
+    import radai_records as RG
+
+    def _explode(*_a, **_k):
+        raise OSError(u"isca")
+    velha = (u"def _pasta_que_sincroniza(pasta):\n"
+             u"    try:\n"
+             u"        import radai_archive\n"
+             u"        sim, motivo = radai_archive.em_pasta_sincronizada(pasta)\n"
+             u"        return bool(sim), u'%s' % (motivo or u'')\n"
+             u"    except Exception:\n"
+             u"        return False, u''\n")
+    ns = dict(vars(RG))
+    exec(velha, ns)
+    real, guarda = A.em_pasta_sincronizada, RG._pasta_que_sincroniza
+    base, base_isca = temp(), temp()
+    A.em_pasta_sincronizada = _explode
+    try:
+        p1, p2 = RG.pseudonimo(UID, base), RG.pseudonimo(UID, base)
+        RG._pasta_que_sincroniza = ns["_pasta_que_sincroniza"]
+        RG.pseudonimo(UID, base_isca)
+    finally:
+        A.em_pasta_sincronizada, RG._pasta_que_sincroniza = real, guarda
+    checar(u"a conferencia que estoura nao deixa gravar a chave",
+           not os.path.isfile(os.path.join(base, RG.NOME_SEGREDO)))
+    checar(u"  e o pseudonimo continua estavel no processo", p1 == p2)
+    checar(u"  (isca) a guarda que falha aberta grava a chave",
+           os.path.isfile(os.path.join(base_isca, RG.NOME_SEGREDO)))
+
+
+def _o_vigia_filho_ve_a_pasta_padrao(com_a_velha):
+    import radai_archive as A
+    import radai_records as RG
+    vazia = temp()
+    codigo = [u"import os, sys",
+              u"sys.path[:0] = %r" % [os.path.dirname(os.path.abspath(RG.__file__)),
+                                      os.path.dirname(os.path.abspath(A.__file__))],
+              u"import radai_archive as A",
+              u"import radai_records as RG"]
+    if com_a_velha:
+        codigo += [u"ns = dict(vars(A))", u"exec(%r, ns)" % RAIZES_SO_PELA_VARIAVEL,
+                   u"A.raizes_espelhadas = ns['raizes_espelhadas']"]
+    codigo += [u"print('PASTA=' + RG.raiz())",
+               u"print('NUVEM=%s' % RG._pasta_que_sincroniza(RG.raiz())[0])"]
+    amb = dict(os.environ)
+    for k in ("RADAI_REGISTRO_DIR", "RADAI_RAIZES_NUVEM"):
+        amb.pop(k, None)
+    amb["LOCALAPPDATA"] = vazia
+    amb["PYTHONIOENCODING"] = "utf-8"
+    r = subprocess.run([sys.executable, "-c", u"\n".join(codigo)], env=amb,
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                       timeout=120)
+    saida = r.stdout.decode("utf-8", "replace")
+    linhas = dict(l.split("=", 1) for l in saida.splitlines() if "=" in l)
+    return linhas.get("PASTA", u""), linhas.get("NUVEM", u""), saida
+
+
+def teste_a_rodada_nao_grava_chave_na_pasta_padrao():
+    secao(u"a pasta padrao do registro, nesta maquina")
+    import radai_archive as A
+    import radai_records as RG
+    padrao = os.path.join(os.path.dirname(os.path.abspath(RG.__file__)),
+                          RG.NOME_PASTA)
+    checar(u"a bateria isola o registro (RADAI_REGISTRO_DIR fora da pasta "
+           u"padrao)", os.path.normcase(os.path.abspath(RG.raiz()))
+           != os.path.normcase(os.path.abspath(padrao)), RG.raiz())
+    chave = os.path.join(padrao, RG.NOME_SEGREDO)
+    checar(u"  e nenhuma chave nova apareceu na pasta padrao nesta rodada",
+           not (os.path.isfile(chave) and os.path.getmtime(chave) >= _INICIO - 1),
+           chave)
+    guardado = os.environ.pop("RADAI_RAIZES_NUVEM", None)
+    try:
+        A._CACHE_RAIZES["quando"] = None
+        aqui = A.em_pasta_sincronizada(padrao)[0]
+    finally:
+        if guardado is not None:
+            os.environ["RADAI_RAIZES_NUVEM"] = guardado
+        A._CACHE_RAIZES["quando"] = None
+    pasta, nuvem, saida = _o_vigia_filho_ve_a_pasta_padrao(False)
+    checar(u"o filho com a LOCALAPPDATA trocada e sem RADAI_REGISTRO_DIR (o "
+           u"vigia das baterias) ve a pasta padrao como quem roda (%s)"
+           % (u"sincroniza" if aqui else u"nao sincroniza"),
+           os.path.normcase(pasta) == os.path.normcase(padrao)
+           and nuvem == str(aqui), saida[-300:])
+    if not aqui:
+        print(u"    PULADO a isca do filho: nesta maquina a pasta padrao nao "
+              u"sincroniza")
+        return
+    _p, nuvem_velha, saida_velha = _o_vigia_filho_ve_a_pasta_padrao(True)
+    checar(u"  (isca) lendo o Drive so pela variavel, o filho nao ve a "
+           u"nuvem (e gravaria a chave nela)", nuvem_velha == u"False",
+           saida_velha[-300:])
 
 
 def teste_a_trava_procura_o_VALOR_e_nao_o_padrao():
@@ -228,8 +447,11 @@ def teste_o_perfil_da_estacao_responde_o_que_ele_perguntou():
     base = temp()
     p = RG.perfil_da_estacao(u"servidor de radioterapia", base)
     for campo in ("nucleos", "memoria", "admin", "internet", "gpu",
-                  "windows", "servicos", "papel_declarado"):
+                  "windows", "papel_declarado"):
         checar(u"tem `%s`" % campo, campo in p, str(sorted(p)))
+    checar(u"e nao tem mais os servicos nem o turno (a pausa de servicos "
+           u"saiu)", "servicos" not in p and "overnight" not in p,
+           str(sorted(p)))
     checar(u"o papel e DECLARADO, nao adivinhado",
            p["papel_declarado"] == u"servidor de radioterapia")
     checar(u"  e `admin` admite «nao deu para saber»",
@@ -1733,6 +1955,9 @@ def main():
     print(u"=" * 70)
     for t in (teste_o_modulo_e_so_stdlib,
               teste_o_pseudonimo_e_estavel_e_nao_reversivel,
+              teste_a_chave_nao_vai_para_pasta_que_sincroniza,
+              teste_a_chave_nao_vai_para_a_nuvem_com_a_localappdata_trocada,
+              teste_sem_como_conferir_a_chave_fica_na_memoria,
               teste_a_trava_procura_o_VALOR_e_nao_o_padrao,
               teste_o_log_completo_viaja_higienizado,
               teste_o_caso_gravado_nao_carrega_identificacao,
@@ -1764,7 +1989,8 @@ def main():
               teste_o_relatorio_de_periodo,
               teste_o_caso_em_andamento_vira_interrompido,
               teste_o_log_da_serie_na_pasta,
-              teste_o_relatorio_diz_versao_datas_e_interrompidos):
+              teste_o_relatorio_diz_versao_datas_e_interrompidos,
+              teste_a_rodada_nao_grava_chave_na_pasta_padrao):
         t()
     print(u"\n" + u"=" * 70)
     if _falhas:

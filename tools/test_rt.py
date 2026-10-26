@@ -357,6 +357,32 @@ def teste_escolha_de_modelo():
            not restritos, str(restritos))
 
 
+def _quem_grava_rtstruct(fonte):
+    import ast
+    fora = []
+    for no in ast.walk(ast.parse(fonte)):
+        if isinstance(no, ast.Call):
+            f = no.func
+            nome = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
+            if nome in ("build_rtstruct", "copy2", "save_as"):
+                fora.append(nome)
+    return fora
+
+
+def teste_a_ponte_de_volta_so_le():
+    secao("radai_rt e a ponte de volta: le o RTSTRUCT e nao grava nenhum")
+    fonte = open(_componentes.fonte("app/radai_rt.py"), encoding="utf-8").read()
+    checar("o modulo nao grava RTSTRUCT (o gravar, sem chamador nas sete pastas, saiu)",
+           not _quem_grava_rtstruct(fonte) and not hasattr(radai_rt, "gravar"),
+           str(_quem_grava_rtstruct(fonte)))
+    isca = fonte + ("\n\ndef gravar(pasta, mascaras, destino):\n"
+                    "    caminho, nomes = _motor().build_rtstruct(str(pasta), mascaras)\n"
+                    "    import shutil\n"
+                    "    shutil.copy2(str(caminho), str(destino))\n")
+    checar("  (isca) o gravar de antes seria acusado",
+           "build_rtstruct" in _quem_grava_rtstruct(isca))
+
+
 def teste_nao_ha_chave_de_api():
     secao("modelos: nao ha mais chave de API em lugar nenhum")
     fonte = open(_componentes.fonte("app/radai_models.py"), encoding="utf-8").read()
@@ -1163,7 +1189,11 @@ def teste_pagina_do_lote():
     checar("diz onde o RTSTRUCT e gravado",
            "pasta de cada série" in ajuda and "DICOM" in ajuda
            and "pasta de cada série" in pagina)
-    checar("tem o seletor de pasta", "/api/pastas" in p)
+    checar("tem o seletor de pasta da casca: o explorador (com o Mapear) e a "
+           "estrela da pasta favorita no campo",
+           "uiExplorador(" in p and 'data-ui-fav="pasta"' in pagina)
+    checar("  e o seletor proprio antigo (o POST em /api/pastas) saiu",
+           "/api/pastas" not in p)
     _cods = [c.get("cod") for c in radai_batch.comparacao_da_tela("CT")]
     checar("a tela diz onde o segundo motor se liga: a coluna «Comparação de "
            "modelos» do PERSONALIZADO, desenhada do contrato",
@@ -1356,6 +1386,7 @@ def main():
               teste_o_aviso_de_nuvem_diz_o_que_esta_em_risco,
               teste_ciclo_fechado, teste_ciclo_contra_valor_analitico,
               teste_ciclo_com_formas_dificeis,
+              teste_a_ponte_de_volta_so_le,
               teste_o_lote_nao_desenha_previa,
               teste_registro_de_modelos, teste_modelo_embutido_vs_baixavel,
               teste_escolha_de_modelo, teste_nao_ha_chave_de_api,

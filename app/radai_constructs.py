@@ -370,7 +370,9 @@ def coracao_ai(masks, grade, log=None, cru=None, pericardio=None):
                  u"rotulos do TotalSegmentator (%s), fechamento de %.0f mm, "
                  u"recortado nos vizinhos e na aorta descendente, cortado "
                  u"acima do %s, buracos de cada corte preenchidos, um "
-                 u"volume. Inclui o pericardio."
+                 u"volume. Inclui o pericardio. A veia cava inferior sai so "
+                 u"onde esta separada do coracao (fora do pericardio e do "
+                 u"coracao do modelo); o esofago fica fora."
                  % (", ".join(entrou), float(E.FECHAMENTO_PERICARDIO_MM), qual))
         if derrame is not None:
             v_der = _cm3(heart_ai & derrame, grade)
@@ -643,11 +645,11 @@ DESCRICAO_DA_BAG_OAR = (
     u"vasos, musculos (psoas +%g mm atras), ossos e pele; menos %g mm de "
     u"grandes veias, grandes arterias, iliopsoas e baco; menos loja "
     u"perirrenal, retroperitonio atras dos grandes vasos, mesorreto (reto +%g "
-    u"mm ate o sacro) e, abaixo da borda inferior da sacroiliaca (sem ela, da "
-    u"cabeca femoral), o que passa de %g mm da parede anterior. Veia porta "
-    u"fora de toda conta. Suavizada %g mm; depois, estomago, duodeno, "
-    u"pancreas e delgado inteiros e colon sem reto; um volume. Ref. Orton "
-    u"2022 doi:10.1016/j.adro.2022.101031 (exclui estomago e pancreas)."
+    u"mm ao sacro) e, abaixo da borda inferior da sacroiliaca (sem ela, "
+    u"cabeca femoral), o que passa %g mm da parede anterior. Veia porta "
+    u"fora de toda conta. Suavizada %g mm; depois estomago, duodeno, pancreas "
+    u"e delgado inteiros e colon sem reto; um volume; furos cheios no fim. "
+    u"Orton 2022 doi:10.1016/j.adro.2022.101031 (exclui estomago e pancreas)."
     % (RECUO_ATRAS_DO_PSOAS_MM, FOLGA_DOS_VIZINHOS_DA_BAG_MM,
        ALCANCE_MESORRETAL_MM, FAIXA_ANTERIOR_CAUDAL_MM,
        SUAVIZACAO_BAG_OAR_MM))
@@ -926,6 +928,33 @@ def _devolver_alcas(bag, inteiros, colon, cav, h):
     return bag
 
 
+def preencher_cortes_axiais(m, grade):
+    from scipy import ndimage
+    m = _bool(m)
+    if not m.any():
+        return m.copy()
+    eixo, _sinal = grade.eixo_sinal("inf")
+    v = np.moveaxis(m, eixo, 0)
+    cheio = np.zeros_like(v)
+    for i in range(v.shape[0]):
+        if v[i].any():
+            cheio[i] = ndimage.binary_fill_holes(v[i])
+    return np.ascontiguousarray(np.moveaxis(cheio, 0, eixo))
+
+
+NOTA_DOS_FUROS_DA_BAG = u"furos +%.1f cm3"
+
+
+def _sem_furo_nos_cortes(m, grade):
+    m = _bool(m)
+    cheio = _bool(preencher_cortes_axiais(m, grade)) | m
+    return cheio, _cm3(cheio & ~m, grade)
+
+
+def _nota_dos_furos(cm3):
+    return [NOTA_DOS_FUROS_DA_BAG % cm3] if cm3 > 0.05 else []
+
+
 def bag_bowel_oar(masks, grade, log=None, cru=None, construidas=None):
     try:
         if grade is None:
@@ -961,6 +990,7 @@ def bag_bowel_oar(masks, grade, log=None, cru=None, construidas=None):
         if not bag.any():
             _falar(log, u"Bag_Bowel_OAR: nada sobrou — nao sai")
             return None
+        bag, furos = _sem_furo_nos_cortes(bag, grade)
         cob, conf = cobertura_da_bag_oar(bag, masks, grade, h, cru,
                                          colon_retido=retido)
         _alca = None
@@ -969,15 +999,17 @@ def bag_bowel_oar(masks, grade, log=None, cru=None, construidas=None):
                 _alca = _m.copy() if _alca is None else (_alca | _m)
         _falar(log, u"Bag_Bowel_OAR: %.0f cm3 (cavidade %.0f cm3; livre %.0f "
                     u"cm3; um volume: %d pedaco(s) a menos, -%.1f cm3, %.1f "
-                    u"cm3 de alca)%s%s"
+                    u"cm3 de alca; furos de cada corte axial: +%.1f cm3)%s%s"
                % (_cm3(bag, grade), _cm3(cav, grade), _cm3(livre, grade),
                   max(0, n_ped - 1), _cm3(caiu, grade),
                   _cm3(caiu & _alca, grade) if _alca is not None else 0.0,
+                  furos,
                   (u". " + u"; ".join(notas)) if notas else u"",
                   u"".join(u". CONFLITO: %s %.1f cm3 fora (%s)" % c
                            for c in conf)))
         return Construcao(CHAVE_BAG_BOWEL_OAR, bag,
-                          descricao_da_bag_oar(cob, conf, notas),
+                          descricao_da_bag_oar(cob, conf,
+                                               notas + _nota_dos_furos(furos)),
                           entrou=[u"abdominal_cavity (trunk_cavities)"],
                           faltou=list(notas),
                           extras={"duras": h, "moles": s, "cobertura": cob,
@@ -1001,9 +1033,15 @@ def acabamento_da_bag_oar(bag, masks, grade, log=None):
     novo = radai_geom.maior_componente(novo, conectividade=1)
     if not novo.any():
         novo = bag
+    # GUARDA: o furo de cada corte axial se preenche por ultimo, depois das
+    # subtracoes; reaplicar uma exclusao depois disso reabre o furo.
+    novo, furos = _sem_furo_nos_cortes(novo, grade)
+    if furos > 0:
+        _falar(log, u"   Bag_Bowel_OAR: furos de cada corte axial "
+                    u"preenchidos no fim, +%.1f cm3" % furos)
     cob, conf = cobertura_da_bag_oar(novo, masks, grade, h,
                                      colon_retido=retido)
-    notas = []
+    notas = _nota_dos_furos(furos)
     if not _tem(_exata(masks, "rectum")):
         notas.append(u"sem Rectum_ai, compartimento mesorretal nao aplicado")
     _z, _marco, nota = marco_caudal(masks, grade)
@@ -1119,3 +1157,286 @@ def anus(masks, grade, log=None, cru=None, bag=None):
                 u"pelvico para baixo)" % _cm3(m, grade))
     return Construcao(CHAVE_ANUS, m, DESCRICAO_DO_ANUS,
                       entrou=[CHAVE_BAG_BOWEL])
+
+
+def _grade_canonica(grade):
+    from radai_skin import _espacamento_canonico
+    return radai_geom.Grade(_espacamento_canonico(grade),
+                            ("sup", "post", "esq"))
+
+
+CHAVE_LARINGE = "larynx"
+PARTES_DA_LARINGE = ("cricoid_cartilage", "thyroid_cartilage", "larynx_air",
+                     "hypopharynx")
+MARCO_SUPERIOR_DA_LARINGE = "hyoid"
+MARCO_INFERIOR_DA_LARINGE = "cricoid_cartilage"
+FECHAMENTO_DA_LARINGE_MM = 3.0
+DESCRICAO_DA_LARINGE = (
+    u"Larynx: cricoide, cartilagem tireoide, ar da laringe e hipofaringe "
+    u"somados e conectados (fechamento de %g mm e o furo de cada corte "
+    u"preenchido), do corte logo abaixo da borda inferior do hioide ao "
+    u"ultimo corte com a cricoide. Recorte do FULL: nenhum modelo novo.")
+
+
+def laringe(masks, grade, log=None, cru=None):
+    from scipy import ndimage
+    from radai_skin import _para_canonico, _de_canonico
+    if grade is None:
+        return Construcao(CHAVE_LARINGE, None, u"",
+                          faltou=[u"Larynx: sem grade"])
+    hio = _exata(masks, MARCO_SUPERIOR_DA_LARINGE, cru)
+    cri = _exata(masks, MARCO_INFERIOR_DA_LARINGE, cru)
+    if not _tem(hio):
+        return Construcao(CHAVE_LARINGE, None, u"", faltou=[
+            u"Larynx: sem o hioide nesta serie — o limite superior e o corte "
+            u"logo abaixo dele"])
+    if not _tem(cri):
+        return Construcao(CHAVE_LARINGE, None, u"", faltou=[
+            u"Larynx: sem a cricoide nesta serie — o limite inferior e o "
+            u"ultimo corte dela"])
+    soma, entrou, faltou = None, [], []
+    for nome in PARTES_DA_LARINGE:
+        p = _exata(masks, nome, cru)
+        if _tem(p) and _bool(p).shape == _bool(cri).shape:
+            soma = _bool(p).copy() if soma is None else (soma | _bool(p))
+            entrou.append(nome)
+        else:
+            faltou.append(nome)
+    zh = np.flatnonzero(_para_canonico(_bool(hio), grade).any(axis=(1, 2)))
+    zc = np.flatnonzero(_para_canonico(_bool(cri), grade).any(axis=(1, 2)))
+    topo, base = int(zh.min()) - 1, int(zc.min())
+    if topo < base:
+        return Construcao(CHAVE_LARINGE, None, u"", faltou=[
+            u"Larynx: o ultimo corte da cricoide fica acima da borda inferior "
+            u"do hioide — nao ha faixa entre os dois marcos"])
+    sc = _para_canonico(soma, grade).copy()
+    faixa = np.zeros(sc.shape, bool)
+    faixa[base:topo + 1] = True
+    sc &= faixa
+    gc = _grade_canonica(grade)
+    f = float(FECHAMENTO_DA_LARINGE_MM)
+    lar = sc
+    if f > 0 and sc.any():
+        lar = (sc | radai_geom.contrair(radai_geom.expandir(sc, f, gc), f,
+                                        gc)) & faixa
+    lar = radai_geom.preencher_buracos(lar, por_fatia=True) & faixa
+    m = _de_canonico(lar, grade)
+    if not m.any():
+        return Construcao(CHAVE_LARINGE, None, u"", faltou=[
+            u"Larynx: nenhuma das partes cai entre o hioide e a cricoide"])
+    n_ped = int(ndimage.label(lar)[1])
+    notas = []
+    if faltou:
+        notas.append(u"sem %s nesta serie" % u", ".join(faltou))
+    if n_ped > 1:
+        notas.append(u"%d pedacos que o fechamento de %g mm nao uniu"
+                     % (n_ped, f))
+    descr = DESCRICAO_DA_LARINGE % f
+    if notas:
+        descr = u"%s Nesta serie: %s." % (descr, u"; ".join(notas))
+    _falar(log, u"Larynx: %.1f cm3 em %d corte(s), do ultimo da cricoide ao "
+                u"logo abaixo do hioide (%s)%s"
+           % (_cm3(m, grade), topo - base + 1, u", ".join(entrou),
+              (u"; " + u"; ".join(notas)) if notas else u""))
+    return Construcao(CHAVE_LARINGE, m, descr, entrou=entrou,
+                      faltou=[u"sem %s" % n for n in faltou])
+
+
+CHAVES_DA_ATM = (("tmj_left", u"L", u"esquerdo"),
+                 ("tmj_right", u"R", u"direito"))
+MANDIBULA_DA_ATM = "mandible"
+ATM_ALEM_DO_CONDILO_MM = 1.0
+PIXELS_MINIMOS_DO_CONTORNO_DO_RAMO = 4
+DESCRICAO_DA_ATM = (
+    u"TMJ_%s: o condilo da mandibula do lado %s, do corte em que o ramo se "
+    u"divide em dois contornos (coronoide a frente, condilo atras) ao topo "
+    u"do condilo, com %g mm de margem em 3D. Derivada da mandibula do FULL: "
+    u"nenhum modelo novo.")
+
+
+def _contornos_do_ramo(fatia):
+    from scipy import ndimage
+    rot, n = ndimage.label(fatia, np.ones((3, 3), bool))
+    if not n:
+        return []
+    tam = np.bincount(rot.ravel(), minlength=n + 1)
+    return [rot == j for j in range(1, n + 1)
+            if tam[j] >= PIXELS_MINIMOS_DO_CONTORNO_DO_RAMO]
+
+
+def _mais_posterior(contornos):
+    return max(contornos, key=lambda c: float(np.nonzero(c)[0].mean()))
+
+
+def condilo_do_lado(lado):
+    from scipy import ndimage
+    zs = np.flatnonzero(lado.any(axis=(1, 2)))
+    if not zs.size:
+        return None, u"sem mandibula deste lado"
+    topo, divisao = int(zs.max()), None
+    for z in range(topo, int(zs.min()) - 1, -1):
+        if len(_contornos_do_ramo(lado[z])) >= 2:
+            divisao = z
+        elif divisao is not None:
+            break
+    if divisao is None:
+        return None, (u"o ramo nao se divide em dois contornos (coronoide e "
+                      u"condilo) em corte nenhum")
+    cond = np.zeros(lado.shape, bool)
+    atual = _mais_posterior(_contornos_do_ramo(lado[divisao]))
+    cond[divisao] = atual
+    perto = np.ones((3, 3), bool)
+    for z in range(divisao + 1, topo + 1):
+        viz = ndimage.binary_dilation(atual, perto, iterations=2)
+        cand = [c for c in _contornos_do_ramo(lado[z]) if (c & viz).any()]
+        if not cand:
+            break
+        atual = _mais_posterior(cand)
+        cond[z] = atual
+    return cond, None
+
+
+ANCORAS_DO_PLANO_MEDIO_DA_ATM = (("skull", u"do cranio"),
+                                 ("brain", u"do encefalo"),
+                                 ("vertebrae_C1", u"da vertebra C1"),
+                                 ("vertebrae_C2", u"da vertebra C2"))
+
+
+def plano_medio_da_atm(masks, mand, grade, cru=None):
+    from radai_skin import _para_canonico
+    mb = _bool(mand)
+    mc = _para_canonico(mb, grade)
+    for nome, _onde in ANCORAS_DO_PLANO_MEDIO_DA_ATM:
+        a = _exata(masks, nome, cru)
+        if not _tem(a) or _bool(a).shape != mb.shape:
+            continue
+        ac = _para_canonico(_bool(a), grade)
+        # GUARDA: na base o skull contem a mandibula; o que sobra dela numa
+        # mandibulectomia puxaria o centro para o lado que ficou.
+        por_x = (ac.sum(axis=(0, 1))
+                 - (ac & mc).sum(axis=(0, 1))).astype(np.float64)
+        tot = float(por_x.sum())
+        if tot > 0:
+            return float((por_x * np.arange(por_x.size)).sum()) / tot, nome
+    return None, None
+
+
+def atms(masks, grade, log=None, cru=None):
+    from radai_skin import _para_canonico, _de_canonico
+    if grade is None:
+        return dict((c, Construcao(c, None, u"", faltou=[
+            u"TMJ_%s: sem grade" % l])) for c, l, _n in CHAVES_DA_ATM)
+    mand = _exata(masks, MANDIBULA_DA_ATM, cru)
+    if not _tem(mand):
+        return dict((c, Construcao(c, None, u"", faltou=[
+            u"TMJ_%s: sem a mandibula nesta serie" % l]))
+            for c, l, _n in CHAVES_DA_ATM)
+    mc = _para_canonico(_bool(mand), grade)
+    xs = np.flatnonzero(mc.any(axis=(0, 1)))
+    caixa = (int(xs.min()) + int(xs.max())) / 2.0
+    meio, ancora = plano_medio_da_atm(masks, mand, grade, cru)
+    xx = np.arange(mc.shape[2])
+    gc = _grade_canonica(grade)
+    if ancora is None:
+        meio = caixa
+        _falar(log, u"TMJ: sem %s nesta serie, o plano medio passa pelo "
+                    u"centro da caixa da mandibula (numa mandibula parcial "
+                    u"ele sai do meio)" % u", ".join(
+                        n for n, _o in ANCORAS_DO_PLANO_MEDIO_DA_ATM))
+    else:
+        _falar(log, u"TMJ: o plano medio passa pelo centro %s (%s), a %.1f "
+                    u"mm do centro da caixa da mandibula"
+               % (dict(ANCORAS_DO_PLANO_MEDIO_DA_ATM)[ancora], ancora,
+                  abs(meio - caixa) * gc.spacing[2]))
+    fora = {}
+    for chave, l, nome_lado in CHAVES_DA_ATM:
+        metade = (xx > meio) if l == u"L" else (xx < meio)
+        cond, pq = condilo_do_lado(mc & metade[None, None, :])
+        if cond is None:
+            fora[chave] = Construcao(chave, None, u"", faltou=[
+                u"TMJ_%s: %s" % (l, pq)])
+            continue
+        m = _de_canonico(radai_geom.expandir(cond, ATM_ALEM_DO_CONDILO_MM,
+                                             gc), grade)
+        n_cortes = int(cond.any(axis=(1, 2)).sum())
+        _falar(log, u"TMJ_%s: %.2f cm3 (o condilo em %d corte(s), do que "
+                    u"divide o ramo ao topo, +%g mm)"
+               % (l, _cm3(m, grade), n_cortes, ATM_ALEM_DO_CONDILO_MM))
+        fora[chave] = Construcao(chave, m, DESCRICAO_DA_ATM % (
+            l, nome_lado, ATM_ALEM_DO_CONDILO_MM),
+            entrou=[MANDIBULA_DA_ATM] + ([ancora] if ancora else []))
+    return fora
+
+
+CHAVE_PULMOES = "lungs"
+PULMOES_DA_SOMA = (("lung_left", u"esquerdo"), ("lung_right", u"direito"))
+DESCRICAO_DOS_PULMOES = (
+    u"Lungs: a soma dos pulmoes (Lung_L e Lung_R do FULL como sairam, sem o "
+    u"derrame pleural). Recorte do FULL: nenhum modelo novo.")
+
+
+def soma_dos_pulmoes(masks):
+    soma, lados = None, []
+    for nome, lado in PULMOES_DA_SOMA:
+        p = _exata(masks, nome)
+        if _tem(p):
+            soma = _bool(p).copy() if soma is None else (soma | _bool(p))
+            lados.append(lado)
+    return soma, lados
+
+
+def pulmoes(masks, grade, log=None, cru=None):
+    soma, lados = soma_dos_pulmoes(masks)
+    if soma is None:
+        return Construcao(CHAVE_PULMOES, None, u"",
+                          faltou=[u"Lungs: sem pulmao nesta serie"])
+    descr = DESCRICAO_DOS_PULMOES
+    if len(lados) == 1:
+        descr = u"%s Nesta serie: so o pulmao %s." % (descr, lados[0])
+    _falar(log, u"Lungs: %.0f cm3 (pulmao %s)"
+           % (_cm3(soma, grade), u" + ".join(lados)))
+    return Construcao(CHAVE_PULMOES, soma, descr,
+                      entrou=[n for n, _l in PULMOES_DA_SOMA])
+
+
+CHAVE_MANDIBULA = "mandible"
+DENTES_DA_MANDIBULA = ("teeth_lower",)
+DESCRICAO_DA_MANDIBULA = (
+    u"Bone_Mandible: a mandibula da task craniofacial_structures%s, cheia (o "
+    u"furo de cada corte preenchido nos tres planos) e suavizada sem perder "
+    u"area (a uniao da suavizada com a cheia).")
+
+
+def _caixa_com_folga(m, folga=1):
+    fora = []
+    for eixo in range(m.ndim):
+        outros = tuple(i for i in range(m.ndim) if i != eixo)
+        onde = np.flatnonzero(m.any(axis=outros))
+        fora.append(slice(max(0, int(onde.min()) - folga),
+                          min(m.shape[eixo], int(onde.max()) + 1 + folga)))
+    return tuple(fora)
+
+
+def mandibula_cheia(masks, grade, log=None, cru=None):
+    mand = _exata(masks, CHAVE_MANDIBULA, cru)
+    if not _tem(mand):
+        return Construcao(CHAVE_MANDIBULA, None, u"", faltou=[
+            u"Bone_Mandible: sem a mandibula nesta serie"])
+    m = _bool(mand).copy()
+    dentes = uniao_por_nome(masks, DENTES_DA_MANDIBULA, cru=cru, exato=True)
+    com_dentes = _tem(dentes) and _bool(dentes).shape == m.shape
+    if com_dentes:
+        m |= _bool(dentes)
+    cx = _caixa_com_folga(m)
+    cheia = m.copy()
+    cheia[cx] = radai_geom.preencher_buracos(m[cx], triplanar=True) | m[cx]
+    ganho = _cm3(cheia & ~m, grade) if grade is not None else 0.0
+    descr = DESCRICAO_DA_MANDIBULA % (
+        u" com os dentes inferiores por cima (Teeth_Lower)" if com_dentes
+        else u" (sem os dentes inferiores nesta serie)")
+    _falar(log, u"Bone_Mandible: cheia, %s; +%.1f cm3 de furos preenchidos"
+           % (u"com os dentes inferiores" if com_dentes
+              else u"sem os dentes inferiores nesta serie", ganho))
+    return Construcao(CHAVE_MANDIBULA, cheia, descr,
+                      entrou=[CHAVE_MANDIBULA]
+                      + (list(DENTES_DA_MANDIBULA) if com_dentes else []))

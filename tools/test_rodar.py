@@ -89,29 +89,29 @@ SAIRAM = (u"Um paciente ou uma pasta inteira", u"O RTSTRUCT é gravado na pasta 
           u"desta pasta no carrinho")
 
 
-VARRER_DE_ANTES = u"""function varrer(o){
- fetch('/api/lote/varrer',{method:'POST'}).then(r=>r.json()).then(function(d){
-   if(d.erro){ ltEscolha(); msg('ERRO: '+d.erro,false); return }
-   if(window.uiPopupSerie) uiPopupSerie('cx1').fechar();
-   SERIES=d.series||[];
-   msg(molde.replace('%s', SERIES.length), SERIES.length>0);
- }).catch(function(e){msg('ERRO: '+e,false)})}
+VARRER_DE_ANTES = u"""function _ltFim(linhas, d, ler, dias, p, o){
+ var popup = uiPopupSerie('cx1');
+ popup.fechar();
+ SERIES = linhas || [];
+ if(!SERIES.length){ ltEscolha(); msg('Nenhuma série nesta pasta.', false); return; }
+ _achouNaTela(molde.replace('%s', SERIES.length), nota);
+}
 """
 
 
-def _sem_serie_fica_aberto(vr):
-    fecha = u"uiPopupSerie('cx1').fechar()"
-    vazio = u"msg('Nenhuma série nesta pasta.', false)"
-    if fecha not in vr or vazio not in vr:
+def _sem_serie_fica_aberto(fim):
+    fecha = u"popup.fechar()"
+    vazio = u": 'Nenhuma série nesta pasta.', false)"
+    if fecha not in fim or vazio not in fim:
         return False
-    i_fecha, i_vazio = vr.index(fecha), vr.index(vazio)
-    i_cond = vr.rfind(u"series.length", 0, i_vazio)
+    i_fecha, i_vazio = fim.index(fecha), fim.index(vazio)
+    i_cond = fim.rfind(u"!series.length", 0, i_vazio)
     if i_vazio > i_fecha or i_cond < 0:
         return False
-    bloco = vr[i_cond:i_fecha]
+    bloco = fim[i_cond:i_fecha]
     return (u"ltEscolha()" in bloco
             and u"return;" in bloco[bloco.index(vazio):]
-            and u"_achouNaTela(molde" in vr[i_fecha:])
+            and u"_achouNaTela(molde" in fim[bloco.index(vazio) + i_cond:])
 
 
 def _cabeca_ok(p):
@@ -164,14 +164,22 @@ def teste_os_passos():
     checar(u"o rótulo do caminho é o do autor",
            u"Caminho — pasta, ou o .zip do exame" in vis)
     m = re.search(r'<div class="linha cam-linha">(.*?)</div>', p, re.S)
-    checar(u"R10: o campo e os dois botões na MESMA linha flexível",
+    checar(u"R10: o campo e os dois botões na MESMA linha flexível, com a "
+           u"estrela da favorita e o explorador da casca",
            m is not None and u'id="pasta"' in m.group(1)
-           and u"fpAbrir()" in m.group(1) and u"varrer()" in m.group(1))
+           and u"ltProcurar(this)" in m.group(1) and u"varrer()" in m.group(1)
+           and u'data-ui-fav="pasta"' in m.group(1))
     js = _sem_comentario(_js(p))
+    checar(u"  e o seletor próprio (#fp) saiu: o «Procurar…» abre o uiExplorador",
+           u'id="fp"' not in p and u"function fpAbrir" not in js
+           and u"uiExplorador(" in _funcao(js, u"ltProcurar"))
     checar(u"R11: a frase da varredura é inteira",
            u"Varrendo a pasta: o cabeçalho de cada arquivo é lido, e uma pasta "
-           u"grande pode levar alguns minutos." in js
+           u"grande pode levar alguns minutos." in _visivel(p)
            and u"pode levar)..." not in js)
+    checar(u"o filtro de data mora no popup e a varredura manda os dias dele",
+           u'<select data-ui-dias id="lt_dias"' in p
+           and u"uiDias('lt_dias')" in _funcao(js, u"varrer"))
     m = re.search(r'<div class="cart-acoes">(.*?)</div>', p, re.S)
     bts = re.findall(r'<button[^>]*>([^<]*)</button>', m.group(1) if m else u"")
     checar(u"R12: o banner tem os três botões, nessa ordem",
@@ -192,18 +200,32 @@ def teste_os_passos():
            and u"ltEscolha()" in nv and u"FP_FAV" in nv
            and u"uiPopupSerie('cx1')" in _funcao(js, u"ltEscolha"))
     vr = _funcao(js, u"varrer")
+    fim = _funcao(js, u"_ltFim")
+    checar(u"  a varredura é a da casca, em segundo plano, e não um "
+           u"POST único", u"uiVarrer({uso: 'lote'" in vr
+           and u"/api/lote/varrer" not in vr)
     checar(u"  e a varredura que achou séries fecha o popup; a que falhou o reabre",
-           u"uiPopupSerie('cx1').fechar()" in vr
-           and vr.index(u"ltEscolha()") < vr.index(u"uiPopupSerie('cx1').fechar()"))
+           u"popup.fechar()" in fim
+           and fim.index(u"ltEscolha()") < fim.index(u"popup.fechar()"))
     checar(u"  a que não achou série deixa o popup aberto e diz que não achou; a "
            u"que achou leva a contagem para a tela de trabalho",
-           _sem_serie_fica_aberto(vr) and u'id="lt_achou"' in p
+           _sem_serie_fica_aberto(fim) and u'id="lt_achou"' in p
            and p.index(u'id="lt_achou"') > p.index(u'id="cx2"'))
-    checar(u"  ISCA: a varredura de antes (fecha em toda resposta sem erro, a "
-           u"contagem no #msg do popup) reprova",
+    checar(u"  ISCA: o fim que fecha o popup antes de olhar se achou série reprova",
            not _sem_serie_fica_aberto(VARRER_DE_ANTES))
     checar(u"  e o erro de rede também reabre o popup",
-           u"catch(function(e){ ltEscolha();" in vr)
+           u"aoErro: function(m){" in vr and u"ltEscolha(); msg('ERRO: '" in vr)
+    checar(u"  só o sucesso fecha sozinho: o check, a confirmação e depois o popup "
+           u"fecha", u"ler.pronto(" in fim and u"LT_CONFIRMACAO_MS" in fim
+           and fim.index(u"ler.pronto(") > fim.index(u"if(!series.length)"))
+    checar(u"  fechar o popup no meio para a leitura (e o que achou vai para a tela)",
+           u"uiPopupSerie('cx1', {aoFechar: _ltAoFecharPopup," in js
+           and u"ltParar()" in _funcao(js, u"_ltAoFecharPopup"))
+    checar(u"  e reabrir o popup mostra o formulário e conta a abertura (o "
+           u"fechamento automático da confirmação não leva o reaberto)",
+           u"aoAbrir: function(){ _ltAoAbrirPopup() }" in js
+           and u"_ltModo(false)" in _funcao(js, u"_ltAoAbrirPopup")
+           and u"LT_ABERTURAS === vez" in fim)
     checar(u"  e quem chega com séries (a ficha, a lista guardada na aba) não vê o popup",
            u"uiPopupSerie('cx1', {sozinho: function(){ return !LT_CHEGOU_COM_SERIES }})" in js
            and js.count(u"LT_CHEGOU_COM_SERIES = true;") == 2)
@@ -278,25 +300,18 @@ def teste_a_fronteira_no_iniciar():
 
 
 def teste_a_folha_do_turno():
-    secao(u"R18/R19: o «?» do card dos serviços, e só dois botões")
+    secao(u"R18/R19: sem a caixa dos serviços, o STATUS_DIR na folha, e só dois botões")
     import radai_batch as L
     c = L._corpo_da_folha_do_turno()
-    m = re.search(r'<div class="ov-escolha">(.*?)</div><div class="ov-frota"', c, re.S)
-    card = m.group(1) if m else u""
-    balao = re.search(r'<div class="ov-detalhe" id="ov_balao" hidden>(.*)</div>$',
-                      card, re.S)
-    b = balao.group(1) if balao else u""
-    checar(u"o card tem um «?» que abre o detalhe, fechado de início", bool(b)
-           and u'aria-controls="ov_balao"' in card and u'aria-expanded="false"' in card)
-    checar(u"  no balão: o STATUS_DIR, os serviços (SysMain, WSearch) e os protegidos",
-           u"Sem STATUS_DIR em Configurações" in b and u"SysMain" in b
-           and u"WSearch" in b and u"Nunca tocados" in b, b[:200])
-    fora = c.replace(card, u"")
-    checar(u"  e nada disso ficou solto na folha", u"ov-servicos" not in fora
-           and u"Nunca tocados" not in fora)
-    checar(u"  o «?» fica FORA do label (clicar nele não marca a caixa)",
-           re.search(r'<label class="ov-escolha-rot">.*?</label><button type="button" class="ui-ajuda',
-                     card, re.S) is not None)
+    checar(u"a caixa de pausar serviços e o «?» dela saíram",
+           u"ov-escolha" not in c and u'id="ov_pausar"' not in c
+           and u"ov_balao" not in c and u"SysMain" not in c
+           and u"Nunca tocados" not in c)
+    aviso = re.search(r'<p class="ov-frota-aviso" id="ov_frota_aviso" hidden '
+                      r'data-radai-frase>(.*?)</p><div class="ov-frota"', c, re.S)
+    checar(u"  o aviso do STATUS_DIR fica logo acima da frota, oculto até a "
+           u"frota responder", bool(aviso)
+           and u"Sem STATUS_DIR em Configurações" in aviso.group(1), c[-400:])
     js = _sem_comentario(_js(_pagina()))
     checar(u"R19: o «Iniciar sem salvar» saiu da folha",
            u"ov_bt_sem" not in js and u"Iniciar sem salvar" not in js
@@ -330,7 +345,7 @@ def teste_o_personalizado():
            and u"em_breve" not in painel and u"'breve'" not in js)
     checar(u"  e o registro deles saiu do código, com a regra do CSS deles",
            not hasattr(M, "em_breve") and u".p4-breve" not in _pagina())
-    frase = u"Cada modelo grava um arquivo próprio; nenhum entra no RadAI_OAR."
+    frase = u"Cada modelo grava um arquivo próprio; nenhum entra no RadAI_STUDY."
     ajuda = _funcao(js, u"_ajudaDoPainel")
     comp = ajuda[ajuda.index(u"if(tipo === 'comp')"):]
     checar(u"o aviso «Cada modelo grava…» mora no «?» de cada modelo",
@@ -390,13 +405,23 @@ def _fantoma(raiz):
                       datetime.now() - timedelta(days=dias), cortes)
 
 
+def _varrer_pela_casca(pasta, uso="lote"):
+    import radai_varrer
+    d = radai_varrer.iniciar(uso, pasta, dias=0, em_segundo_plano=False)
+    fora = dict(d.get("extra") or {})
+    fora["series"] = list(d.get("linhas") or [])
+    if d.get("erro"):
+        fora["erro"] = d["erro"]
+    return fora
+
+
 def teste_as_rotas():
     secao(u"E11/E12 e R24: a seleção por ficha, a miniatura e o corte")
     import radai_batch as L
     tmp = tempfile.mkdtemp(prefix="radai_rodar_")
     _fantoma(os.path.join(tmp, "share"))
     cli = _app_de_teste()
-    v = cli.post("/api/lote/varrer", json={"pasta": os.path.join(tmp, "share")}).json()
+    v = _varrer_pela_casca(os.path.join(tmp, "share"))
     ss = v.get("series") or []
     checar(u"a varredura devolve as séries com o bilhete `b`",
            len(ss) == 2 and all(s.get("b") for s in ss), str(len(ss)))
@@ -498,7 +523,12 @@ def teste_as_frases_tem_os_doze_idiomas():
         u"Varrendo a pasta: o cabeçalho de cada arquivo é lido, e uma pasta "
         u"grande pode levar alguns minutos.",
         u"Séries selecionadas", u"%s série(s) nesta lista", u"Adicionar as selecionadas à fila",
-        u"Selecionar todas as séries", u"Nenhuma série no carrinho — inclua na tabela acima.",
+        u"Selecionar todas as séries", u"Nenhuma série no carrinho — selecione na tabela acima.",
+        u"selecionar para processar", u"selecionada", u"Parar a leitura",
+        u"Lendo os cabeçalhos dos arquivos…", u"Procurando séries nas subpastas…",
+        u"Conferindo as séries achadas…", u"Ler todas as datas",
+        u"%s pasta(s) ficaram fora do filtro de data.", u"%s pasta(s) olhada(s)",
+        u"%s arquivo(s) lido(s)", u"%s série(s) achada(s)",
         u"%s série(s) no carrinho, de %s pastas", u"%s série(s) no carrinho",
         GANCHO, u"duplo clique abre a série", u"cortes", u"PROTOCOLOS RT",
         u"PROTOCOLOS RECONSTRUÇÕES 3D", L.POR_QUE_A_BASE_RODA_SEMPRE,
@@ -624,6 +654,27 @@ async def _navegar(exe, root, prints):
                    and not est["achou"], json.dumps(est, ensure_ascii=False))
             await pg.fill("#pasta", root)
             await pg.click(".cam-linha button.pri")
+            await pg.wait_for_timeout(120)
+            lendo = await pg.evaluate("""() => ({
+              form: document.getElementById('lt_form').hidden,
+              ler: !!document.querySelector('#lt_ler_cx .ui-ler .ui-pensa-linha'),
+              c1: !!document.getElementById('cx1').closest('.ui-modal-veu.vis')})""")
+            checar(u"[tela] depois de «Varrer séries» o popup não volta ao formulário: "
+                   u"mostra a leitura (thinking-states sobre o fundo orgânico)",
+                   lendo["form"] and lendo["ler"] and lendo["c1"], json.dumps(lendo))
+            await pg.wait_for_selector("#lt_ler_cx .ui-certo.on", timeout=30000)
+            pronto = await pg.evaluate("""() => ({
+              c1: !!document.getElementById('cx1').closest('.ui-modal-veu.vis'),
+              linha: (document.querySelector('#lt_ler_cx .ui-pensa-linha') || {}).textContent || ''})""")
+            await pg.wait_for_timeout(950)
+            linha = await pg.evaluate(
+                "(document.querySelector('#lt_ler_cx .ui-pensa-linha') || {}).textContent || ''")
+            checar(u"[tela]   ao terminar, o check aparece com o popup ainda aberto e a "
+                   u"linha troca para a confirmação",
+                   pronto["c1"] and linha.startswith(u"3 "), json.dumps([pronto, linha],
+                                                                    ensure_ascii=False))
+            await pg.wait_for_function(
+                "!document.getElementById('cx1').closest('.ui-modal-veu.vis')", timeout=8000)
             await pg.wait_for_selector("#tab .mini-serie img", timeout=30000)
             await pg.wait_for_timeout(1500)
             n = await pg.evaluate("document.querySelectorAll('#tab tr[id^=linha_]').length")
@@ -643,6 +694,38 @@ async def _navegar(exe, root, prints):
             checar(u"[tela]   e a contagem aparece na tela de trabalho, fora do popup",
                    conta and conta["t"].startswith(u"3 ") and conta["h"] > 0
                    and not conta["noPopup"], json.dumps(conta, ensure_ascii=False))
+            _REABRIR = """async (isca) => {
+               if(isca) _ltAoAbrirPopup = function(){};
+               ltEscolha(); varrer();
+               for(let i = 0; i < 300; i++){
+                if(document.querySelector('#lt_ler_cx .ui-certo.on')) break;
+                await new Promise(r => setTimeout(r, 100)) }
+               uiPopupSerie('cx1').fechar();
+               await new Promise(r => setTimeout(r, 120));
+               ltEscolha();
+               await new Promise(r => setTimeout(r, 2600));
+               const r = {c1: !!document.getElementById('cx1').closest('.ui-modal-veu.vis'),
+                          form: !document.getElementById('lt_form').hidden};
+               uiPopupSerie('cx1').fechar();
+               return r; }"""
+            reab = await pg.evaluate(_REABRIR, False)
+            await pg.wait_for_timeout(500)
+            checar(u"[tela] o popup reaberto durante a confirmação fica aberto, no "
+                   u"formulário, e não fecha sozinho", reab["c1"] and reab["form"],
+                   json.dumps(reab))
+            reab_i = await pg.evaluate(_REABRIR, True)
+            await pg.wait_for_timeout(500)
+            checar(u"[tela]   (isca) sem contar as aberturas, o fechamento atrasado "
+                   u"levaria o popup reaberto", not (reab_i["c1"] and reab_i["form"]),
+                   json.dumps(reab_i))
+            await pg.reload(wait_until="networkidle")
+            await pg.wait_for_timeout(1200)
+            await pg.evaluate("(r) => { ltEscolha(); document.getElementById('pasta').value = r;"
+                              " varrer(); return true }", root)
+            await pg.wait_for_function(
+                "!document.getElementById('cx1').closest('.ui-modal-veu.vis')", timeout=30000)
+            await pg.wait_for_selector("#tab .mini-serie img", timeout=30000)
+            await pg.wait_for_timeout(1500)
             larg = await pg.evaluate(
                 "document.querySelector('#tab .mini-serie img').naturalWidth")
             checar(u"[tela] R24: a miniatura carregou", larg and larg > 0, str(larg))
@@ -820,21 +903,18 @@ async def _navegar(exe, root, prints):
                    sorted(bts) == sorted([u"Cancelar", u"Salvar e iniciar"])
                    and not await pg.evaluate("!!document.getElementById('ov_bt_sem')"),
                    u" | ".join(bts))
-            cb0 = await pg.evaluate("document.querySelector('.ui-pnl #ov_pausar').checked")
-            await pg.click(".ui-pnl .ov-ajuda")
-            await pg.wait_for_timeout(500)
-            bal = await pg.evaluate("""() => { const b = document.querySelector('.ui-pnl #ov_balao');
+            bal = await pg.evaluate("""() => { const b = document.querySelector('.ui-pnl #ov_frota_aviso');
+               if(!b) return {existe: false};
                b.scrollIntoView({block:'nearest'});
                const r = b.getBoundingClientRect(), c = document.querySelector('.ui-pnl .pnl-corpo').getBoundingClientRect();
-               return {vis: !b.hidden && r.height > 0, t: b.textContent,
+               return {existe: true, vis: !b.hidden && r.height > 0, t: b.textContent,
                        dentro: r.left >= c.left && r.right <= c.right,
-                       cb: document.querySelector('.ui-pnl #ov_pausar').checked,
-                       exp: document.querySelector('.ui-pnl .ov-ajuda').getAttribute('aria-expanded')}; }""")
-            checar(u"[tela] R18: o «?» do card abre o STATUS_DIR e os serviços, dentro da folha",
-                   bal["vis"] and u"SysMain" in bal["t"] and u"STATUS_DIR" in bal["t"]
-                   and bal["dentro"] and bal["exp"] == "true",
-                   json.dumps({k: bal[k] for k in ("vis", "dentro", "exp")}))
-            checar(u"[tela]   e clicar no «?» não mexe na caixa dos serviços", bal["cb"] == cb0)
+                       caixa: !!document.querySelector('.ui-pnl #ov_pausar')}; }""")
+            checar(u"[tela] R18: sem STATUS_DIR, o aviso aparece na folha, dentro dela, "
+                   u"e a caixa dos serviços não existe mais",
+                   bal.get("existe") and bal.get("vis") and u"STATUS_DIR" in bal.get("t", u"")
+                   and bal.get("dentro") and not bal.get("caixa"),
+                   json.dumps({k: bal.get(k) for k in ("existe", "vis", "dentro", "caixa")}))
             fr = await pg.evaluate("(document.querySelector('.ui-pnl .rc-fronteira')||{}).textContent||''")
             checar(u"[tela]   e a folha leva a frase da regra 1", FRONTEIRA in fr)
             if prints:
@@ -942,8 +1022,6 @@ async def _navegar(exe, root, prints):
                 await pg.evaluate("folhaOvernight()")
                 await pg.wait_for_selector(".ui-pnl .ov-form", timeout=10000)
                 await pg.wait_for_timeout(900)
-                await pg.click(".ui-pnl .ov-ajuda")
-                await pg.wait_for_timeout(500)
                 await _prints(pg, prints, u"overnight_en")
                 await pg.keyboard.press("Escape")
             await pg.evaluate("localStorage.setItem('radai_idioma', 'pt-BR')")

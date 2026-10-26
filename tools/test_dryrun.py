@@ -337,6 +337,76 @@ def teste_a_conta_fecha_no_dicom():
         shutil.rmtree(base, ignore_errors=True)
 
 
+def _exame_nas_duas_formas(series):
+    vigia, lote = {}, []
+    for s in series:
+        v = dict(s)
+        v["modality"] = v.pop("mod")
+        vigia[v["uid"]] = v
+        l = dict(s)
+        l["modalidade"] = l.pop("mod")
+        lote.append(l)
+    return vigia, lote
+
+
+def _rm(uid, esp, cortes, axial, estudo=u"ST_RM", mod=u"MR"):
+    z1 = esp * (cortes - 1) if axial else 0.0
+    return {"uid": uid, "dir": u"P/%s" % uid, "estudo": estudo,
+            "count": cortes, "cortes": cortes, "z0": 0.0, "z1": z1,
+            "esp_dec": esp, "espessura_mm": esp, "axial": axial, "mod": mod,
+            "date": "20261020", "pid": u"FANTOMA"}
+
+
+def teste_a_mesma_regra_no_vigia_e_no_rodar_agora():
+    secao(u"a mesma regra no vigia e no Rodar agora, inclusive na RM")
+    import radai_watcher as W
+    import radai_triage as TR
+
+    def sugeridas(lote):
+        return dict((x["uid"], x["porque_sugerida"])
+                    for x in TR.escolher_para_contorno(lote) if x["sugerida"])
+
+    rm = [_rm(u"rm_t1", 1.0, 176, False), _rm(u"rm_t2", 5.0, 24, True),
+          _rm(u"rm_fl", 3.0, 50, True)]
+    vigia, lote = _exame_nas_duas_formas(rm)
+    pelo_vigia, pelo_lote = W.escolher_simulacao(vigia), sugeridas(lote)
+    checar(u"a RM do vigia (chave modality) rende UMA sugestao",
+           len(pelo_vigia) == 1, pelo_vigia)
+    checar(u"  e o motivo diz RM, nunca TC de simulacao",
+           all(m.startswith(u"RM do exame") and u"TC de" not in m
+               for m in pelo_vigia.values()), pelo_vigia)
+    checar(u"a mesma RM no Rodar agora (chave modalidade) tambem sugere",
+           len(pelo_lote) == 1, pelo_lote)
+    checar(u"  e e a MESMA serie, com o mesmo motivo",
+           pelo_lote == pelo_vigia, (pelo_lote, pelo_vigia))
+
+    tc = [_rm(u"tc_5", 5.0, 60, True, u"ST_TC", u"CT"),
+          _rm(u"tc_1", 1.0, 300, True, u"ST_TC", u"CT")]
+    vigia, lote = _exame_nas_duas_formas(tc)
+    pelo_vigia, pelo_lote = W.escolher_simulacao(vigia), sugeridas(lote)
+    checar(u"(isca) a TC continua escolhendo a de simulacao nas duas portas",
+           list(pelo_vigia) == [u"tc_5"] and pelo_lote == pelo_vigia
+           and pelo_vigia[u"tc_5"].startswith(u"TC de simulacao"),
+           (pelo_vigia, pelo_lote))
+
+    misto = [_rm(u"m_tc", 3.0, 100, True, u"ST_M", u"CT"),
+             _rm(u"m_rm", 3.0, 100, True, u"ST_M", u"MR")]
+    vigia, lote = _exame_nas_duas_formas(misto)
+    checar(u"no exame com TC e RM, a TC e a sugerida, e a RM nao",
+           list(W.escolher_simulacao(vigia)) == [u"m_tc"]
+           and list(sugeridas(lote)) == [u"m_tc"])
+
+    sag = [_rm(u"s_rm", 1.0, 176, False, u"ST_S", u"MR")]
+    vigia, lote = _exame_nas_duas_formas(sag)
+    checar(u"a RM so sagital e sugerida nas duas portas",
+           list(W.escolher_simulacao(vigia)) == [u"s_rm"]
+           and list(sugeridas(lote)) == [u"s_rm"])
+    sag_tc = [_rm(u"s_tc", 1.0, 176, False, u"ST_T", u"CT")]
+    vigia, lote = _exame_nas_duas_formas(sag_tc)
+    checar(u"(isca) a TC so sagital continua recusada nas duas portas",
+           not W.escolher_simulacao(vigia) and not sugeridas(lote))
+
+
 def teste_o_4d_nao_elege_uma_fase():
     secao(u"o 4D nao elege uma fase")
     import radai_watcher as W
@@ -389,6 +459,7 @@ def main():
     teste_o_empate_de_espessura_vai_para_a_mais_recente()
     teste_no_4d_a_avg_ganha_de_todas()
     teste_sem_medida()
+    teste_a_mesma_regra_no_vigia_e_no_rodar_agora()
     teste_a_conta_fecha_no_dicom()
     print(u"\n" + u"=" * 66)
     if _falhou:

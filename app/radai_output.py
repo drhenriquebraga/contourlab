@@ -320,10 +320,13 @@ class Saida(object):
                              else suavizar_mm),
                 cru=bool(reg.get("cru", False)),
                 descontar=bool(reg.get("desconta", False)),
-                rotulo=(rotulo or ("STUDY_" + cod)), **extra)
+                rotulo=(rotulo or radai_sets.rotulo_dicom(cod)), **extra)
             _s_conj = time.time() - _t_conj
             alvo = self._alvo(reg["infixo"])
-            self._gravar_arquivo(rt, alvo)
+            try:
+                self._gravar_arquivo(rt, alvo)
+            finally:
+                _apagar_temp_do_rs(rt, self.engine)
             self.gravados.append(cod)
             self.log("%s: %d estrutura(s) em %s"
                      % (reg["nome"], len(nomes), os.path.basename(alvo)))
@@ -349,10 +352,14 @@ class Saida(object):
         return self.conjunto("ts", juntas, "ts", suavizar_mm=0.0)
 
     def full_e_oar(self, cruas, volume_hu=None, cads=None, cervicais=None,
-                   torax=None, modo="auto", oar_fora=None, extras=None):
+                   torax=None, modo="auto", oar_fora=None, extras=None,
+                   protocolo=None):
         import radai_sets
         modo = normalizar_modo(modo)
         if modo == MODO_FAST:
+            if protocolo:
+                self.log(u"STUDY_Fast: o protocolo proprio vale so no "
+                         u"PERSONALIZADO; foi IGNORADO no modo FAST")
             if oar_fora:
                 self.log(u"OAR_Fast: a lista de estruturas tiradas do OAR "
                          u"(%d) foi IGNORADA no modo FAST — sem FULL, tirar "
@@ -364,8 +371,14 @@ class Saida(object):
                          % len(cervicais))
             return self._oar_fast(cruas, volume_hu=volume_hu, cads=cads,
                                   torax=torax)
-        permitidos, _tiradas = permitidos_do_oar(oar_fora, log=self.log,
-                                                 engine=self.engine)
+        _unioes_proprias = []
+        if protocolo:
+            permitidos, _tiradas, _unioes_proprias = permitidos_do_protocolo(
+                protocolo, oar_fora, log=self.log)
+        else:
+            permitidos, _tiradas = permitidos_do_oar(oar_fora, log=self.log,
+                                                     engine=self.engine)
+        _nomes_proprios = radai_sets.nomes_proprios_em_vigor()
         t0 = time.time()
         try:
             engine = self.engine
@@ -404,6 +417,12 @@ class Saida(object):
             observacoes = dict(meta_pre.get("observacoes") or {})
             construcoes = dict(meta_pre.get("construcoes") or {})
             fora_regiao = dict(meta_pre.get("fora_do_oar_por_regiao") or {})
+            if protocolo:
+                # GUARDA: o protocolo proprio escolhe as estruturas; da regiao
+                # so vale a que a anatomia exige (sem ela a estrutura e falsa).
+                _exigidas = getattr(engine, "REGIAO_EXIGIDA_NO_OAR", None) or {}
+                fora_regiao = dict((k, m) for k, m in fora_regiao.items()
+                                   if k in _exigidas and k in permitidos)
             if fora_regiao:
                 permitidos = frozenset(set(permitidos) - set(fora_regiao))
             # GUARDA: os niveis (Lvl_*) vao so ao FULL; ao OAR vao so a uniao e
@@ -414,16 +433,17 @@ class Saida(object):
                 try:
                     try:
                         import radai_hnlnl as _hn
-                        _unioes = (_hn.NOME_DA_UNIAO, _hn.NOME_DA_UNIAO_NEUTRA)
+                        _da_uniao = (_hn.NOME_DA_UNIAO,
+                                     _hn.NOME_DA_UNIAO_NEUTRA)
                     except Exception:
-                        _hn, _unioes = None, (u"LNL_UNION", u"LNL_Union")
+                        _hn, _da_uniao = None, (u"LNL_UNION", u"LNL_Union")
                     for _n in cervicais:
                         masks[_n] = cervicais[_n]
                         origem[_n] = "hnlnl"
                         construcoes[_n] = {
                             "suavizar_mm": 0.0, "recortar_por": (),
                             "contem": ((u"Lvl_", u"LNL")
-                                       if _n in _unioes else ()),
+                                       if _n in _da_uniao else ()),
                             "descricao": u""}
                     try:
                         observacoes.update(
@@ -434,6 +454,14 @@ class Saida(object):
                                  % str(e)[:120])
                     self.log(u"FULL: +%d nivel(is) cervical(is)"
                              % len(cervicais))
+                    _ivb = dict((_k, cervicais[_k]) for _k in getattr(
+                        _hn, "CLAVICULA_DO_IVB", {}) if _k in cervicais)
+                    for _k in _ivb:
+                        construcoes[_k]["acabamento"] = _hn.acabamento_do_ivb
+                    for _u in (_da_uniao if _ivb else ()):
+                        if _u in construcoes:
+                            construcoes[_u]["acabamento"] = (
+                                _hn.acabamento_da_uniao_sem_a_clavicula(_ivb))
                     _subst = _parotidas_do_viii_no_full(
                         _hn, cervicais, masks, grade, self.log)
                     for _lado, (_chave, _m, _ts) in _subst.items():
@@ -450,7 +478,7 @@ class Saida(object):
                     # do pescoco) nao leva a uniao ao OAR.
                     _ext = getattr(cervicais, "extensao", None) or {}
                     if _ext and not _ext.get("ok", True):
-                        for _u in _unioes:
+                        for _u in _da_uniao:
                             if _u in cervicais:
                                 fora_substituidas[_u] = (
                                     u"estudo marcado pela regua dos niveis: "
@@ -518,7 +546,7 @@ class Saida(object):
                 suavizar_mm=self.suavizar_mm,
                 cru=bool(reg.get("cru", False)),
                 descontar=bool(reg.get("desconta", False)),
-                rotulo="STUDY_" + reg["cod"],
+                rotulo=radai_sets.rotulo_dicom(reg["cod"]),
                 observacoes=observacoes,
                 construcoes=construcoes,
                 exigir_grade=True,
@@ -540,26 +568,37 @@ class Saida(object):
                 # GUARDA: o OAR sai das mascaras finais ANTES de o FULL virar
                 # contorno; se o FULL estoura a memoria, o entregue ja esta
                 # gravado inteiro.
+                _ex_sel = {}
+                if ((_nomes_proprios or _unioes_proprias)
+                        and _aceita(engine.selecionar_do_full, "nomes")):
+                    _ex_sel = {"nomes": _nomes_proprios,
+                               "unioes": _unioes_proprias}
                 rt_oar, nomes_oar, fora = engine.selecionar_do_full(
                     preparo, nomes_full, permitidos,
-                    log=self._log, meta=meta_oar)
+                    log=self._log, meta=meta_oar, **_ex_sel)
+                alvo_oar, study_vazio = None, None
                 if not nomes_oar:
+                    # GUARDA: STUDY vazio (a RM com so o Brain_ai) nao derruba a serie; o FULL sai e ela fica pronta.
                     _apagar_temp_do_oar(rt_oar, engine)
-                    raise RuntimeError(
-                        u"a selecao do OAR ficou vazia (%d estrutura(s) no "
-                        u"FULL, nenhuma na lista de permitidos)"
-                        % len(nomes_full))
-                alvo_oar = self._alvo("")
-                try:
-                    self._gravar_arquivo(rt_oar, alvo_oar)
-                finally:
-                    _apagar_temp_do_oar(rt_oar, engine)
-                self.gravados.append("oar")
+                    study_vazio = (u"nenhuma das %d estrutura(s) do FULL esta "
+                                   u"na lista do STUDY" % len(nomes_full))
+                    self.log(u"STUDY: saiu vazio (%s) e nao e gravado; o FULL "
+                             u"e gravado e a serie fica pronta so com ele"
+                             % study_vazio)
+                else:
+                    alvo_oar = self._alvo("")
+                    try:
+                        self._gravar_arquivo(rt_oar, alvo_oar)
+                    finally:
+                        _apagar_temp_do_oar(rt_oar, engine)
+                    self.gravados.append("oar")
                 t_gr_full = time.time()
-                self.log(u"%s: %d estrutura(s) em %s (gravado antes do FULL, "
-                         u"em %.1f s)"
-                         % (radai_sets.POR_COD["oar"]["nome"], len(nomes_oar),
-                            os.path.basename(alvo_oar), t_gr_full - t_oar))
+                if alvo_oar:
+                    self.log(u"%s: %d estrutura(s) em %s (gravado antes do "
+                             u"FULL, em %.1f s)"
+                             % (radai_sets.POR_COD["oar"]["nome"],
+                                len(nomes_oar), os.path.basename(alvo_oar),
+                                t_gr_full - t_oar))
                 alvo_full = self._alvo(reg["infixo"])
                 parcial, full_gravado = None, alvo_full
                 try:
@@ -568,6 +607,8 @@ class Saida(object):
                         rt_full, nomes_full = preparo.gravar()
                     self._gravar_arquivo(rt_full, alvo_full)
                 except Exception as e_full:
+                    if not alvo_oar:
+                        raise
                     full_gravado = None
                     nomes_full = {}
                     parcial = {"conjunto": "full",
@@ -580,6 +621,8 @@ class Saida(object):
             finally:
                 if hasattr(preparo, "liberar"):
                     preparo.liberar()
+                _apagar_temp_do_rs(getattr(preparo, "caminho", preparo),
+                                   engine)
             if full_gravado is not None:
                 self.gravados.append("full")
                 self.log(u"%s: %d estrutura(s) em %s"
@@ -614,13 +657,15 @@ class Saida(object):
                            PARTE_DE: PASSO_DO_OAR}
                           for n, s in list(meta_oar.get("etapas") or []))
             return {"oar": alvo_oar, "full": full_gravado,
-                    "estruturas": sorted(nomes_oar.values()),
+                    "estruturas": sorted((nomes_oar or {}).values()),
                     "estruturas_full": sorted(nomes_full.values()),
-                    "fora": list(fora), "segundos": time.time() - t0,
+                    "fora": list(fora or ()), "segundos": time.time() - t0,
                     "tempos": tempos, "etapas": etapas,
-                    "modo": modo, "entregue": alvo_oar,
+                    "modo": modo, "entregue": alvo_oar or full_gravado,
+                    "study_vazio": study_vazio,
                     "oar_fora": list(_tiradas),
-                    "oar_fora_por_regiao": dict(fora_regiao),
+                    "oar_fora_por_regiao": dict(fora_regiao,
+                                                **fora_substituidas),
                     "oar_fora_por_substituicao": dict(fora_substituidas),
                     "parcial": parcial}
         except Exception as e:
@@ -702,6 +747,10 @@ class Saida(object):
                 _lida = self.serie_lida()
                 if _lida is not None:
                     extra["serie"] = _lida
+            _nomes_proprios = radai_sets.nomes_proprios_em_vigor()
+            if _nomes_proprios and _aceita(engine.build_rtstruct,
+                                           "nomes_do_entregue"):
+                extra["nomes_do_entregue"] = _nomes_proprios
             decimar = getattr(engine, "DECIMACAO_FAST_MM", 0.2)
             t_rs = time.time()
             rt, nomes = engine.build_rtstruct(
@@ -785,7 +834,7 @@ class Saida(object):
                 if reg.get("achado"):
                     self.log(u"ACHADO: a task %s (ato declarado) sai no arquivo "
                              u"proprio %s — nunca no entregue"
-                             % (task, "STUDY_" + reg["cod"]))
+                             % (task, radai_sets.rotulo_dicom(reg["cod"])))
                 if self.conjunto(reg["cod"], vista, "nosso", derivar=False):
                     feitos.append(reg["cod"])
             except Exception as e:
@@ -984,6 +1033,40 @@ def permitidos_do_oar(oar_fora=None, log=None, engine=None):
     return frozenset(base - set(tiradas)), tiradas
 
 
+def permitidos_do_protocolo(protocolo, oar_fora=None, log=None):
+    import radai_sets
+    p = dict(protocolo or {})
+    sel = radai_sets.selecao_do_protocolo(p)
+    if isinstance(oar_fora, (list, tuple, set, frozenset)):
+        pedidos = set(str(x or "").strip() for x in oar_fora)
+    else:
+        pedidos = set(s.strip() for s in str(oar_fora or "").replace(
+            ";", ",").split(","))
+    pedidos.discard("")
+    try:
+        import engine as _e
+        _clinico = _e.nome_clinico
+    except Exception:
+        _clinico = lambda k: k
+    tiradas = [k for k in sel["chaves"]
+               if k in pedidos or _clinico(k) in pedidos]
+    chaves = [k for k in sel["chaves"] if k not in tiradas]
+    nome = u"%s" % (p.get("nome") or p.get("id") or u"?")
+    if log:
+        try:
+            log(u"STUDY pelo protocolo proprio «%s»: %d estrutura(s) e %d "
+                u"uniao(oes)" % (nome, len(chaves), len(sel["unioes"])))
+            for item, motivo in sel["recusadas"]:
+                log(u"STUDY: protocolo proprio «%s»: %s nao entra (%s)"
+                    % (nome, item, motivo))
+            if tiradas:
+                log(u"STUDY desta serie SEM %s (tirada(s) com o «x»; ficam "
+                    u"no FULL)" % u", ".join(tiradas))
+        except Exception:
+            pass
+    return frozenset(chaves), tiradas, list(sel["unioes"])
+
+
 def _dizer_fora_por_regiao(fora_regiao, nomes, log, arquivo, destino,
                            engine=None):
     if not fora_regiao or not log:
@@ -1031,6 +1114,18 @@ def _apagar_temp_do_oar(rt_oar, engine=None):
         import shutil
         prefixo = getattr(engine, "PREFIXO_TEMP_DO_OAR", None)
         pasta = os.path.dirname(str(rt_oar or ""))
+        if (prefixo and pasta and os.path.basename(pasta).startswith(prefixo)
+                and os.path.isdir(pasta)):
+            shutil.rmtree(pasta, ignore_errors=True)
+    except Exception:
+        pass
+
+
+def _apagar_temp_do_rs(rt, engine=None):
+    try:
+        import shutil
+        prefixo = getattr(engine, "PREFIXO_TEMP_DO_RS", None)
+        pasta = os.path.dirname(str(rt or ""))
         if (prefixo and pasta and os.path.basename(pasta).startswith(prefixo)
                 and os.path.isdir(pasta)):
             shutil.rmtree(pasta, ignore_errors=True)
@@ -1125,7 +1220,7 @@ def _parotida_do_ts_so_no_full(masks, sufixo_por_roi, observacoes,
         observacoes[ts] = hn.descricao_da_parotida_ts(lado, com_viii)
         fora_substituidas[ts] = (
             u"substituida pela parotida do nivel VIII" if com_viii else
-            u"a parotida do OAR vem so dos niveis cervicais, e eles nao a "
+            u"a parotida do STUDY vem so dos niveis cervicais, e eles nao a "
             u"deram nesta serie")
     return frozenset(set(permitidos) - set(do_ts.values()))
 

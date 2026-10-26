@@ -219,8 +219,14 @@ def _chave_do_exame(s):
     return str(s.get("estudo") or s.get("dir") or s.get("pasta") or "")
 
 
+def modalidade_da_serie(s):
+    # GUARDA: o vigia grava `modality` e o Rodar agora `modalidade`; ler uma so das duas da regras diferentes as duas portas.
+    m = str(s.get("modalidade") or s.get("modality") or "").strip().upper()
+    return "MR" if m in ("MR", "MRI", "RM") else m
+
+
 def _pode_ser_tc(s):
-    return str(s.get("modalidade") or "").strip().upper() in ("", "CT")
+    return modalidade_da_serie(s) in ("", "CT")
 
 
 def _quando(s):
@@ -270,8 +276,7 @@ def captura_secundaria(image_type, sop_class=None):
 
 
 def e_rm(s):
-    return str(s.get("modalidade") or "").strip().upper() in ("MR", "MRI",
-                                                              "RM")
+    return modalidade_da_serie(s) == "MR"
 
 
 def orientacao_recusada(s):
@@ -295,9 +300,12 @@ def escolher_simulacao(series, so_axial=True):
 
     escolhidas = {}
     for _pasta, grupo in por_exame.items():
-        cand = [(u, s) for u, s in grupo
-                if not (so_axial and _nao_e_volume_de_contorno(s))
-                and _pode_ser_tc(s)]
+        volumes = [(u, s) for u, s in grupo
+                   if not (so_axial and _nao_e_volume_de_contorno(s))]
+        cand = [(u, s) for u, s in volumes if _pode_ser_tc(s)]
+        rm = not cand
+        if rm:
+            cand = [(u, s) for u, s in volumes if e_rm(s)]
         if not cand:
             continue
 
@@ -363,12 +371,12 @@ def escolher_simulacao(series, so_axial=True):
             _pq = (u"; e a que cobre mais o paciente -- %d serie(s) cobrem "
                    u"menos e ficaram de fora da sugestao (fases de 4D, "
                    u"reconstrucoes parciais)" % _cortadas)
-        elif len(medidas) > 1:
+        elif len(medidas) > 1 and not rm:
             _pq = (u"; a mais grossa das %d series axiais que cobrem o mesmo, "
                    u"com piso em %s mm" % (len(medidas), u"%.2f" % SIM_PISO_MM))
         else:
             _pq = u""
         escolhidas[melhor[0]] = (
-            u"TC de simulacao do exame: %s mm" % (u"%.2f" % melhor[2])
-            + _pq + _pq_extra)
+            (u"RM do exame: %s mm" if rm else u"TC de simulacao do exame: %s mm")
+            % (u"%.2f" % melhor[2]) + _pq + _pq_extra)
     return escolhidas

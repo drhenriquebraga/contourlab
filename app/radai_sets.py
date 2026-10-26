@@ -1,10 +1,26 @@
 # -*- coding: utf-8 -*-
 
+# GUARDA: o rotulo (StructureSetLabel) e so o que o TPS mostra; o conjunto se
+# reconhece pelo nome do arquivo (`RS_RadAI_...`, `do_arquivo`), que nao muda.
+ROTULO_STUDY = "RadAI_STUDY"
+ROTULO_STUDY_FAST = "RadAI_STUDY_Fast"
+ROTULO_FULL = "RadAI_FULL"
+PREFIXO_DO_ROTULO = "RadAI_"
+# GUARDA: rotulo que conjunto de geracao anterior traz -> o cod de hoje, para
+# o cod_do_rotulo. A lista so cresce: o acervo nao se regrava.
+ROTULOS_DE_GERACOES_ANTERIORES = {
+    "RadAI_OAR": "oar",
+    "RadAI_OAR_Fast": "fast",
+    "STUDY_full": "full",
+}
+PREFIXO_DE_ROTULO_ANTERIOR = "STUDY_"
+NOME_NA_TELA = {"oar": u"STUDY", "fast": u"STUDY_Fast", "full": u"FULL"}
+
 CONJUNTOS = (
     {"cod": "oar", "infixo": "", "sufixo": "_ai",
-     "nome": "Radioterapia.ai_OAR",
+     "nome": ROTULO_STUDY,
      "rotulo": u"entregue ao TPS — seleção do FULL para o plano, TG-263",
-     "rotulo_curto": "Radioterapia.ai_OAR",
+     "rotulo_curto": u"STUDY",
      "entregue": True, "agrupado": True, "suavizado": True,
      "desconta": True,
      "motor": "Radioterapia.AI / TotalSegmentator",
@@ -27,7 +43,7 @@ CONJUNTOS = (
                "densidade, margens, coração de radioterapia, pele e "
                "parede). É o que a revisão precisa: a mesclada esconde qual "
                "parte saiu ruim — a costela 12 sai com Dice 0,904 e a "
-               "primeira com 0,970. O conjunto entregue (OAR) é uma seleção "
+               "primeira com 0,970. O conjunto entregue (STUDY) é uma seleção "
                "deste arquivo, com as mesmas estruturas.")},
 
     {"cod": "ts", "infixo": "TS_", "sufixo": "_ts",
@@ -165,15 +181,15 @@ PLUGIN_DA_TASK = dict((p["task"], p) for p in PLUGINS)
 
 SAIDAS_DE_MODO = (
     {"cod": "fast", "infixo": "FAST_", "sufixo": "_ai",
-     "nome": "Radioterapia.ai_OAR_Fast",
-     "rotulo": u"entregue ao TPS (modo FAST) — o OAR sem a Bag_Bowel_OAR e "
+     "nome": ROTULO_STUDY_FAST,
+     "rotulo": u"entregue ao TPS (modo FAST) — o STUDY sem a Bag_Bowel_OAR e "
                u"o Anus, compostos suavizados inteiros",
-     "rotulo_curto": "OAR_Fast",
-     "rotulo_dicom": "RadAI_OAR_Fast",
+     "rotulo_curto": u"STUDY_Fast",
+     "rotulo_dicom": ROTULO_STUDY_FAST,
      "entregue": True, "agrupado": True, "suavizado": True,
      "desconta": True, "modo": "fast",
      "motor": "Radioterapia.AI / TotalSegmentator",
-     "ajuda": (u"O conjunto entregue do modo FAST: as estruturas do OAR, "
+     "ajuda": (u"O conjunto entregue do modo FAST: as estruturas do STUDY, "
                u"menos a Bag_Bowel_OAR e o Anus (que sai da Bag_Bowel, e o "
                u"FAST não monta as bags), montadas pelo mesmo "
                u"pós-processamento do FULL, mas com os compostos suavizados "
@@ -279,6 +295,7 @@ PERMITIDOS_NO_OAR = frozenset([
     "septum_pellucidum", "subarachnoid_space", "temporal_lobe", "thalamus",
     "venous_sinuses", "ventricle",
     "optic_chiasm",
+    "larynx", "tmj_left", "tmj_right", "lungs",
 ])
 
 FORA_DO_OAR_FAST = frozenset(["bag_bowel_oar", "anus"])
@@ -433,3 +450,481 @@ NOMES_DE_ROI_DE_GERACOES_ANTERIORES = {
 
 def chave_de_roi_antiga(nome):
     return NOMES_DE_ROI_DE_GERACOES_ANTERIORES.get(str(nome or "").strip())
+
+
+def rotulo_dicom(cod):
+    c = str(cod or "")
+    fixo = {"oar": ROTULO_STUDY, "fast": ROTULO_STUDY_FAST,
+            "full": ROTULO_FULL}.get(c)
+    if fixo:
+        return fixo
+    return (PREFIXO_DO_ROTULO + c.upper())[:16]
+
+
+def nome_na_tela(cod):
+    c = str(cod or "")
+    if c in NOME_NA_TELA:
+        return NOME_NA_TELA[c]
+    return (POR_COD.get(c) or {}).get("rotulo_curto") or c
+
+
+def cod_do_rotulo(rotulo):
+    r = str(rotulo or "").strip()
+    for c in POR_COD:
+        if r and rotulo_dicom(c) == r:
+            return c
+    if r in ROTULOS_DE_GERACOES_ANTERIORES:
+        return ROTULOS_DE_GERACOES_ANTERIORES[r]
+    if r.startswith(PREFIXO_DE_ROTULO_ANTERIOR):
+        c = r[len(PREFIXO_DE_ROTULO_ANTERIOR):].lower()
+        if c in POR_COD:
+            return c
+    return None
+
+
+LIMITE_DO_NOME_PROPRIO = 16
+DESCRICAO_DA_ROI = u"%s - sugestao IA nao aprovada"
+DESCRICAO_DA_UNIAO = u"uniao de %s - sugestao IA nao aprovada"
+PREFIXO_DO_ACHADO = u"ACHADO:"
+MOTIVO_VAZIO = u"o nome está vazio"
+MOTIVO_ESPACO = u"espaço no começo ou no fim do nome"
+MOTIVO_LONGO = u"mais de 16 caracteres"
+MOTIVO_ASCII = u"só letras sem acento, números e símbolos do teclado (ASCII)"
+MOTIVO_EXTERNO = (u"nome de contorno externo (BODY, External): nenhum conjunto "
+                  u"deste aplicativo o declara")
+MOTIVO_REPETIDO = u"repete o nome de outra estrutura do STUDY"
+
+
+def descricao_da_roi(nome_padrao):
+    return DESCRICAO_DA_ROI % (u"%s" % nome_padrao)
+
+
+def descricao_da_uniao(nomes_padrao):
+    return DESCRICAO_DA_UNIAO % u" + ".join(u"%s" % n for n in nomes_padrao)
+
+
+def nome_padrao_da_descricao(descricao):
+    d = u"%s" % (descricao or u"")
+    fim = DESCRICAO_DA_ROI.split(u"%s", 1)[1]
+    if not d.endswith(fim) or d.startswith(DESCRICAO_DA_UNIAO.split(u"%s")[0]):
+        return None
+    return d[:-len(fim)].strip() or None
+
+
+def motivo_do_nome_proprio(nome):
+    if not isinstance(nome, str) or not nome:
+        return MOTIVO_VAZIO
+    if nome != nome.strip():
+        return MOTIVO_ESPACO
+    if len(nome) > LIMITE_DO_NOME_PROPRIO:
+        return MOTIVO_LONGO
+    if any(ord(c) < 32 or ord(c) > 126 for c in nome):
+        return MOTIVO_ASCII
+    try:
+        import engine
+        engine.conferir_sem_body([nome])
+    except ValueError:
+        return MOTIVO_EXTERNO
+    except Exception:
+        pass
+    return None
+
+
+def validar_nomes_proprios(proprios, nomes_padrao, outros=()):
+    padroes = [u"%s" % n for n in (nomes_padrao or ())]
+    ocupados = set(n.lower() for n in padroes)
+    ocupados |= set((u"%s" % n).lower() for n in (outros or ()))
+    aceitos, recusas, vistos = {}, {}, set()
+    for p in padroes:
+        novo = (proprios or {}).get(p)
+        if novo is None or novo == u"" or novo == p:
+            continue
+        motivo = motivo_do_nome_proprio(novo)
+        if motivo is None and (novo.lower() in ocupados
+                               or novo.lower() in vistos):
+            motivo = MOTIVO_REPETIDO
+        if motivo:
+            recusas[p] = motivo
+            continue
+        vistos.add(novo.lower())
+        aceitos[p] = novo
+    return aceitos, recusas
+
+
+def nomes_proprios_em_vigor():
+    try:
+        import radai_config as _c
+        if str(_c.modo_dos_nomes() or u"").strip().lower() != u"proprios":
+            return {}
+        return dict((u"%s" % k, u"%s" % v)
+                    for k, v in dict(_c.nomes_proprios() or {}).items()
+                    if k and v)
+    except Exception:
+        return {}
+
+
+# GUARDA: as construcoes cujo engine.CONSTRUCOES nao diz tudo o que exige
+# (a task da parede, o motor dos niveis). "base" e a base da modalidade.
+EXIGENCIAS_DAS_CONSTRUCOES = {
+    "ChestWall_L": {"tasks": ("trunk_cavities",), "torax": True,
+                    "so_tc": True},
+    "ChestWall_R": {"tasks": ("trunk_cavities",), "torax": True,
+                    "so_tc": True},
+    "breast_left": {"tasks": ("breasts",)},
+    "breast_right": {"tasks": ("breasts",)},
+    "bag_bowel_oar": {"tasks": ("trunk_cavities",),
+                      "fora_do_modo": ("fast",)},
+    "Skin": {"tasks": ("base",), "so_tc": True},
+    "rectum": {"estruturas": ("colon",)},
+    # GUARDA: a parotida do VIII exige tambem o ECM (headneck_muscles), que
+    # a recorta.
+    "LNL_UNION": {"tasks": ("hnlnl",), "so_tc": True},
+    "parotid_lnl_left": {"tasks": ("hnlnl", "headneck_muscles"),
+                         "so_tc": True},
+    "parotid_lnl_right": {"tasks": ("hnlnl", "headneck_muscles"),
+                          "so_tc": True},
+}
+MOTORES_DAS_ESTRUTURAS = ("hnlnl", "cranio_ct")
+PAROTIDAS_DO_TS = ("parotid_gland_left", "parotid_gland_right")
+
+
+def pode_no_study(chave):
+    k = u"%s" % (chave or u"")
+    if not k or k.startswith(u"_") or k.startswith(u"Lvl_"):
+        return False
+    if k in PAROTIDAS_DO_TS:
+        return False
+    try:
+        import engine
+        if k in getattr(engine, "INDICE_26", ()):
+            return False
+    except Exception:
+        pass
+    return True
+
+
+def _ferramentas(modalidade):
+    import engine
+    import radai_modes as md
+    import radai_names as rn
+    import radai_tasks as rt
+    mod = md._modalidade(modalidade)
+    base = md.base_de(mod)
+    fam = rt.familia_da_task
+    cat = list(getattr(rt, "CATALOGO", ()) or ())
+
+    def _mod_da_task(t):
+        for d in cat:
+            if d.get("task") == t:
+                return md._modalidade(d.get("modalidade"))
+        for d in cat:
+            if fam(d.get("task")) == fam(t):
+                return md._modalidade(d.get("modalidade"))
+        return None
+
+    def vale(t):
+        if fam(t) == fam(base):
+            return True
+        return _mod_da_task(t) == mod
+    return engine, md, rn, rt, mod, base, vale
+
+
+def _disponiveis(modalidade):
+    engine, md, rn, rt, mod, base, vale = _ferramentas(modalidade)
+    fam = rt.familia_da_task
+    disp = {}
+
+    def por(k, tasks=(), motores=()):
+        e = disp.setdefault(u"%s" % k, {"tasks": set(), "motores": set()})
+        e["tasks"].update(tasks)
+        e["motores"].update(motores)
+
+    def quem(t):
+        return base if fam(t) == fam(base) else t
+
+    try:
+        cm = engine.TS_CLASS_MAP or {}
+    except AttributeError:
+        cm = {}
+    for t in TASKS_DO_FULL:
+        if not vale(t):
+            continue
+        try:
+            mapa = cm.get(rt.nome_na_biblioteca(quem(t))) or cm.get(t) or {}
+            crus = [u"%s" % v for v in dict(mapa).values()]
+        except Exception:
+            crus = []
+        for cru in crus:
+            if rotulo_vai_ao_full(t, cru):
+                por(rn.canonico(cru), tasks=(quem(t),))
+    for k, tm in (getattr(engine, "TS_MAP", None) or {}).items():
+        for t in tm:
+            if task_do_full(t) and vale(t):
+                por(k, tasks=(quem(t),))
+    cm_key = rn.CHAVE_DO_CORACAO_DO_MODELO
+    if "heart" in disp and cm_key not in disp:
+        por(cm_key, tasks=disp["heart"]["tasks"])
+    lados = getattr(engine, "CHAVES_GLANDULA_POR_LADO", {}) or {}
+    bilateral = getattr(engine, "CHAVE_GLANDULA_BILATERAL", None)
+    if bilateral and bilateral in disp:
+        for k in lados.values():
+            por(k, tasks=disp[bilateral]["tasks"])
+    if mod == "CT":
+        try:
+            import radai_motores_full as mf
+            for cod, chaves in (mf.estruturas_no_full() or {}).items():
+                for k in chaves:
+                    por(k, motores=(cod,))
+        except Exception:
+            pass
+        try:
+            import radai_hnlnl as hn
+            for k in getattr(hn, "CHAVES_NO_OAR", ()) or ():
+                por(k, motores=("hnlnl",))
+        except Exception:
+            pass
+
+    def _cabe(exige):
+        for item in (exige or ()):
+            if not any(alt in disp for alt in str(item).split("|")):
+                return False
+        return True
+    mudou = True
+    while mudou:
+        mudou = False
+        for comp, partes in (getattr(engine, "COMPOSTOS", None) or {}).items():
+            if comp in disp:
+                continue
+            vivas = [p for p in partes if p in disp]
+            if vivas:
+                ts, ms = set(), set()
+                for p in vivas:
+                    ts |= disp[p]["tasks"]
+                    ms |= disp[p]["motores"]
+                por(comp, tasks=ts, motores=ms)
+                mudou = True
+        for c in (getattr(engine, "CONSTRUCOES", None) or ()):
+            if c.get("exige_hu") and mod != "CT":
+                continue
+            if not _cabe(c.get("exige")):
+                continue
+            ts = set()
+            for item in (c.get("exige") or ()):
+                for alt in str(item).split("|"):
+                    if alt in disp:
+                        ts |= disp[alt]["tasks"]
+                        break
+            for k in (c.get("saidas") or {}):
+                if k not in disp:
+                    por(k, tasks=ts or (base,))
+                    mudou = True
+        for mae, spec in (getattr(engine, "DERIVADAS", None) or {}).items():
+            if mae not in disp or not _cabe(spec.get("exige")):
+                continue
+            for _m, _e, _o, filha in spec.get("planos") or ():
+                if filha not in disp:
+                    por(filha, tasks=disp[mae]["tasks"])
+                    mudou = True
+    for c in (getattr(engine, "CONSTRUCOES", None) or ()):
+        for k, spec in (c.get("saidas") or {}).items():
+            if k not in disp:
+                continue
+            for alvo in (tuple(spec.get("um_volume_com") or ())
+                         + tuple(spec.get("reune") or ())):
+                if alvo in disp and alvo != k:
+                    disp[k]["tasks"] |= disp[alvo]["tasks"]
+    for k, ex in EXIGENCIAS_DAS_CONSTRUCOES.items():
+        so_tasks = [t for t in (ex.get("tasks") or ())
+                    if t != "base" and t not in MOTORES_DAS_ESTRUTURAS]
+        if (k not in disp and so_tasks and not ex.get("estruturas")
+                and not (ex.get("so_tc") and mod != "CT")
+                and all(task_do_full(t) and vale(t) for t in so_tasks)):
+            por(k, tasks=so_tasks)
+    for k, ex in EXIGENCIAS_DAS_CONSTRUCOES.items():
+        if k not in disp:
+            continue
+        if ex.get("so_tc") and mod != "CT":
+            disp.pop(k, None)
+            continue
+        for t in ex.get("tasks") or ():
+            if t == "base":
+                disp[k]["tasks"].add(base)
+            elif t in MOTORES_DAS_ESTRUTURAS:
+                disp[k]["motores"].add(t)
+            elif vale(t):
+                disp[k]["tasks"].add(t)
+    return disp, base
+
+
+def _achados_da_modalidade(modalidade):
+    import radai_modes as md
+    try:
+        import radai_tasks as rt
+        cat = dict((d.get("task"), d) for d in (rt.CATALOGO or ()))
+    except Exception:
+        cat = {}
+    mod = md._modalidade(modalidade)
+    return [p for p in PLUGINS if p.get("achado")
+            and md._modalidade((cat.get(p["task"]) or {}).get("modalidade")
+                               or "CT") == mod]
+
+
+def estruturas_para_tabela(modalidade="CT"):
+    import engine
+    disp, base = _disponiveis(modalidade)
+    fora = []
+    for k in sorted(disp):
+        if not pode_no_study(k):
+            continue
+        info = disp[k]
+        try:
+            nome = engine.nome_clinico(k)
+        except Exception:
+            nome = k
+        extra = sorted(t for t in info["tasks"] if t != base)
+        task = (extra[0] if extra else
+                (sorted(info["motores"])[0] if info["motores"] else base))
+        fora.append({"task": task, "nome_padrao": nome,
+                     "chave_anatomica": k,
+                     "no_study": k in PERMITIDOS_NO_OAR,
+                     "achado": False, "protocolo": True})
+    for p in _achados_da_modalidade(modalidade):
+        fora.append({"task": p["task"],
+                     "nome_padrao": PREFIXO_DO_ACHADO + p["task"],
+                     "chave_anatomica": p["task"], "no_study": False,
+                     "achado": True, "protocolo": True})
+    fora.sort(key=lambda x: (not x["no_study"], x["achado"],
+                             x["nome_padrao"].lower()))
+    return fora
+
+
+def _chave_do_item(item, por_nome, disp):
+    s = u"%s" % (item or u"")
+    if s in por_nome:
+        return por_nome[s]
+    if s in disp:
+        return s
+    return None
+
+
+def _resolver(lista, modalidade):
+    import engine
+    disp, base = _disponiveis(modalidade)
+    por_nome = {}
+    for k in disp:
+        if not pode_no_study(k):
+            continue
+        try:
+            por_nome[engine.nome_clinico(k)] = k
+        except Exception:
+            pass
+    achados = dict((PREFIXO_DO_ACHADO + p["task"], p["task"])
+                   for p in _achados_da_modalidade(modalidade))
+    chaves, de_achado, recusadas = [], [], []
+    for item in (lista or ()):
+        s = u"%s" % (item or u"")
+        if s in achados:
+            if achados[s] not in de_achado:
+                de_achado.append(achados[s])
+            continue
+        k = _chave_do_item(s, por_nome, disp)
+        if k is None:
+            recusadas.append((s, u"não sai nesta modalidade"))
+        elif not pode_no_study(k):
+            recusadas.append((s, u"não vai ao STUDY"))
+        elif k not in chaves:
+            chaves.append(k)
+    return chaves, de_achado, recusadas, disp, base
+
+
+def tasks_de_estruturas(lista, modalidade="CT"):
+    chaves, de_achado, _r, disp, base = _resolver(lista, modalidade)
+    fora = []
+    for k in chaves:
+        for t in sorted(disp[k]["tasks"]):
+            if t != base and t not in fora:
+                fora.append(t)
+    for t in de_achado:
+        if t not in fora:
+            fora.append(t)
+    return tuple(fora)
+
+
+def motores_de_estruturas(lista, modalidade="CT"):
+    chaves, _a, _r, disp, _b = _resolver(lista, modalidade)
+    fora = []
+    for k in chaves:
+        for m in sorted(disp[k]["motores"]):
+            if m not in fora:
+                fora.append(m)
+    return tuple(fora)
+
+
+def _itens_do_protocolo(protocolo):
+    p = dict(protocolo or {})
+    itens = list(p.get("estruturas") or ())
+    for u in (p.get("merges") or ()):
+        itens.extend(list((u or {}).get("de") or ()))
+    return itens
+
+
+def tasks_do_protocolo(protocolo):
+    p = dict(protocolo or {})
+    return tasks_de_estruturas(_itens_do_protocolo(p),
+                               p.get("modalidade") or "CT")
+
+
+def motores_do_protocolo(protocolo):
+    p = dict(protocolo or {})
+    return motores_de_estruturas(_itens_do_protocolo(p),
+                                 p.get("modalidade") or "CT")
+
+
+def selecao_do_protocolo(protocolo, nomes_padrao=None):
+    p = dict(protocolo or {})
+    mod = p.get("modalidade") or "CT"
+    chaves, de_achado, recusadas, disp, _b = _resolver(
+        p.get("estruturas") or (), mod)
+    import engine
+    padroes = set(nomes_padrao or ())
+    for k in disp:
+        try:
+            padroes.add(engine.nome_clinico(k))
+        except Exception:
+            pass
+    unioes, vistos = [], set()
+    for u in (p.get("merges") or ()):
+        nome = (u or {}).get("nome")
+        de, _a, rec, _d, _b2 = _resolver((u or {}).get("de") or (), mod)
+        motivo = motivo_do_nome_proprio(nome)
+        if motivo is None and (nome.lower() in vistos
+                               or nome.lower() in set(
+                                   x.lower() for x in padroes)):
+            motivo = MOTIVO_REPETIDO
+        if motivo is None and not de:
+            motivo = u"nenhuma estrutura da união sai nesta modalidade"
+        if motivo:
+            recusadas.append((u"%s" % (nome or u""), motivo))
+            continue
+        vistos.add(nome.lower())
+        unioes.append({"nome": nome, "de": de})
+        recusadas.extend(rec)
+    return {"chaves": chaves, "unioes": unioes, "achados": de_achado,
+            "recusadas": recusadas}
+
+
+def protocolo_proprio(ident, modalidade=None):
+    i = u"%s" % (ident or u"")
+    if not i:
+        return None
+    try:
+        import radai_config as _c
+        import radai_modes as md
+        lista = _c.protocolos_proprios(md._modalidade(modalidade)
+                                       if modalidade else None)
+    except Exception:
+        return None
+    for p in (lista or ()):
+        if u"%s" % ((p or {}).get("id") or u"") == i:
+            return dict(p)
+    return None

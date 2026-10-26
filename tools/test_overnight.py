@@ -72,38 +72,6 @@ def fonte(nome):
     return io.open(_componentes.fonte("app/" + nome), encoding="utf-8").read()
 
 
-class LimpadorFalso(object):
-
-    def __init__(self, estados, nega=()):
-        self.estados = dict(estados)
-        self.nega = set(nega)
-        self.parados = []
-        self.iniciados = []
-
-    def estado_dos_servicos(self):
-        return [{"nome": n, "porque": u"—", "estado": e}
-                for n, e in sorted(self.estados.items())]
-
-    def parar_servico(self, nome):
-        if nome in self.nega:
-            return {"ok": False, "msg": u"%s: o Windows negou." % nome}
-        self.parados.append(nome)
-        self.estados[nome] = "parado"
-        return {"ok": True, "msg": u"%s: parado." % nome}
-
-    def iniciar_servico(self, nome):
-        if nome in self.nega:
-            return {"ok": False, "msg": u"%s: o Windows negou." % nome}
-        self.iniciados.append(nome)
-        self.estados[nome] = "rodando"
-        return {"ok": True, "msg": u"%s: religado." % nome}
-
-
-def com_limpador(falso):
-    sys.modules["radai_cleaner"] = falso
-    return falso
-
-
 def teste_o_modulo_e_so_stdlib():
     secao(u"o modulo do turno e so biblioteca padrao")
     import ast
@@ -118,213 +86,40 @@ def teste_o_modulo_e_so_stdlib():
     PADRAO = {"json", "os", "socket", "time", "hashlib", "sys", "re"}
     fora = [m for m in topo if m not in PADRAO]
     checar(u"nenhum import de topo fora da stdlib", not fora, str(fora))
-    checar(u"e o limpador entra DENTRO das funcoes",
-           "radai_cleaner" not in topo and "import radai_cleaner" in f,
-           u"no topo, ele impediria o vigia de subir")
+    checar(u"e o turno nao chama mais o limpador (a pausa de servicos saiu)",
+           "radai_cleaner" not in f)
     w = fonte("radai_watcher.py")
-    checar(u"e o arranque do vigia chama a restauracao",
-           "restaurar_se_pendente(log=wlog)" in w)
     i = w.find("def main()")
-    checar(u"  dentro do `main`", "restaurar_se_pendente" in w[i:])
+    checar(u"o arranque do vigia apaga o registro de um turno antigo",
+           "apagar_registro_antigo(log=wlog)" in w[i:])
+    checar(u"  e nao chama mais a restauracao dos servicos",
+           "restaurar_se_pendente" not in w)
 
 
-def teste_o_turno_abre_e_fecha():
-    secao(u"o turno abre, pausa, e o fim devolve a estacao")
+def teste_a_pausa_de_servicos_saiu():
+    secao(u"o turno nao pausa servico nenhum; o registro antigo sai")
     import radai_overnight as ov
+    for n in ("iniciar", "encerrar", "estado", "ha_registro",
+              "restaurar_se_pendente", "caminho_do_registro"):
+        checar(u"o modulo nao tem mais `%s`" % n, not hasattr(ov, n))
+    checar(u"  e continua com a frota", hasattr(ov, "frota")
+           and hasattr(ov, "resumo_da_frota"))
     d = temp()
-
-    lp = com_limpador(LimpadorFalso({
-        "SysMain": "rodando",
-        "WSearch": "rodando",
-        "DiagTrack": "parado",
-        "MapsBroker": "ausente",
-    }))
-    r = ov.iniciar(pausar_servicos=True, pasta=d)
-    checar(u"abriu", r["ok"] and not r["ja_estava"])
-    checar(u"parou os dois que estavam rodando",
-           sorted(lp.parados) == ["SysMain", "WSearch"], str(lp.parados))
-    checar(u"  e nao tocou no que ja estava parado",
-           "DiagTrack" not in lp.parados)
-    checar(u"  nem no que nao existe", "MapsBroker" not in lp.parados)
-
-    e = ov.estado(d)
-    checar(u"a tela ve o turno aberto", e["ativo"])
-    checar(u"  e ve QUAIS estao pausados",
-           sorted(e["pausados"]) == ["SysMain", "WSearch"], str(e["pausados"]))
-
-    r2 = ov.encerrar(pasta=d)
-    checar(u"encerrou", r2["ok"])
-    checar(u"religou os dois", sorted(lp.iniciados) == ["SysMain", "WSearch"],
-           str(lp.iniciados))
-    checar(u"e NAO religou o que ja estava parado antes da noite",
-           "DiagTrack" not in lp.iniciados,
-           u"devolver a estacao e devolver o que estava")
-    checar(u"o registro sumiu no fim", not ov.ha_registro(d))
-    checar(u"e a tela volta a dizer que nao ha turno", not ov.estado(d)["ativo"])
-
-
-def teste_o_registro_nasce_antes_da_primeira_parada():
-    secao(u"o registro e gravado ANTES de parar qualquer coisa")
-    import radai_overnight as ov
-    d = temp()
-    visto = {"antes_da_primeira_parada": None}
-
-    class Espia(LimpadorFalso):
-        def parar_servico(self, nome):
-            if visto["antes_da_primeira_parada"] is None:
-                visto["antes_da_primeira_parada"] = ov.ha_registro(d)
-            return LimpadorFalso.parar_servico(self, nome)
-
-    com_limpador(Espia({"SysMain": "rodando", "WSearch": "rodando"}))
-    ov.iniciar(pausar_servicos=True, pasta=d)
-    checar(u"o registro ja existia quando o primeiro servico foi parado",
-           visto["antes_da_primeira_parada"] is True,
-           u"gravar depois perde justamente o que a queda interrompeu")
-
-    dado = json.loads(io.open(ov.caminho_do_registro(d),
-                              encoding="utf-8").read())
-    acoes = dict((s["nome"], s["acao"]) for s in dado["servicos"])
-    checar(u"e ele anota a acao de cada um",
-           acoes.get("SysMain") == "parado" and acoes.get("WSearch") == "parado",
-           str(acoes))
-    ov.encerrar(pasta=d)
-
-
-def teste_a_queda_de_energia():
-    secao(u"a noite que a queda de energia interrompeu")
-    import radai_overnight as ov
-    d = temp()
-    lp = com_limpador(LimpadorFalso({"SysMain": "rodando",
-                                     "WSearch": "rodando"}))
-    ov.iniciar(pausar_servicos=True, pasta=d)
-    lp.iniciados = []
-    checar(u"o registro sobreviveu a queda", ov.ha_registro(d))
-
+    reg = os.path.join(d, ov.NOME_REGISTRO_ANTIGO)
+    io.open(reg, "w", encoding="utf-8").write(json.dumps(
+        {"servicos": [{"nome": "SysMain", "acao": "parado"},
+                      {"nome": "DiagTrack", "acao": "nao_mexido"}]}))
     linhas = []
-    r = ov.restaurar_se_pendente(log=linhas.append, pasta=d)
-    checar(u"o arranque seguinte percebe", r["havia"] is True)
-    checar(u"  e devolve os servicos",
-           sorted(lp.iniciados) == ["SysMain", "WSearch"], str(lp.iniciados))
-    checar(u"  e diz no log que a noite foi INTERROMPIDA",
-           any("interrompida" in l for l in linhas), " | ".join(linhas)[:200])
-    checar(u"  e limpa o registro", not ov.ha_registro(d))
-    lp.iniciados = []
-    r2 = ov.restaurar_se_pendente(pasta=d)
-    checar(u"o arranque seguinte a esse nao mexe em nada",
-           r2["havia"] is False and not lp.iniciados)
-
-
-def teste_abrir_duas_vezes_nao_perde_o_estado_original():
-    secao(u"abrir duas vezes nao apaga o estado original")
-    import radai_overnight as ov
-    d = temp()
-    lp = com_limpador(LimpadorFalso({"SysMain": "rodando"}))
-    ov.iniciar(pausar_servicos=True, pasta=d)
-    r = ov.iniciar(pausar_servicos=True, pasta=d)
-    checar(u"o segundo diz que ja estava aberto", r["ja_estava"] is True)
-    dado = json.loads(io.open(ov.caminho_do_registro(d),
-                              encoding="utf-8").read())
-    checar(u"e o registro ainda diz que o SysMain ESTAVA RODANDO",
-           dado["servicos"][0]["antes"] == "rodando",
-           u"sobrescrever aqui gravaria `parado`, e de manha ninguem o religa")
-    lp.iniciados = []
-    ov.encerrar(pasta=d)
-    checar(u"por isso o fim ainda o religa", lp.iniciados == ["SysMain"])
-
-
-def teste_sem_registro_nao_para_nada():
-    secao(u"sem conseguir gravar o registro, nada e pausado")
-    import radai_overnight as ov
-    d = temp()
-    lp = com_limpador(LimpadorFalso({"SysMain": "rodando"}))
-    real = ov._gravar
-    try:
-        ov._gravar = lambda dado, pasta="": False
-        r = ov.iniciar(pausar_servicos=True, pasta=d)
-    finally:
-        ov._gravar = real
-    checar(u"o turno recusa abrir", r["ok"] is False)
-    checar(u"e NENHUM servico foi parado", lp.parados == [], str(lp.parados))
-
-
-def teste_o_negado_nao_vira_pausado():
-    secao(u"servico que o Windows negou nao entra como pausado")
-    import radai_overnight as ov
-    d = temp()
-    com_limpador(LimpadorFalso({"SysMain": "rodando", "WSearch": "rodando"},
-                               nega=("WSearch",)))
-    ov.iniciar(pausar_servicos=True, pasta=d)
-    e = ov.estado(d)
-    checar(u"so o que parou de verdade conta como pausado",
-           e["pausados"] == ["SysMain"], str(e["pausados"]))
-    dado = json.loads(io.open(ov.caminho_do_registro(d),
-                              encoding="utf-8").read())
-    acoes = dict((s["nome"], s["acao"]) for s in dado["servicos"])
-    checar(u"e o que falhou fica registrado como falhou",
-           acoes.get("WSearch") == "falhou", str(acoes))
-    ov.encerrar(pasta=d)
-
-
-def teste_o_que_nao_religou_nao_vira_alarme_eterno():
-    secao(u"o que nao religou fica dito, e nao vira alarme eterno")
-    import radai_overnight as ov
-    d = temp()
-    lp = com_limpador(LimpadorFalso({"SysMain": "rodando",
-                                     "WSearch": "rodando"}))
-    ov.iniciar(pausar_servicos=True, pasta=d)
-    lp.nega = set(["WSearch"])
-    linhas = []
-    r = ov.encerrar(log=linhas.append, pasta=d)
-    checar(u"religou o que deu", r["religados"] == 1, str(r["religados"]))
-    checar(u"e diz QUAL nao voltou",
-           any("WSearch" in l for l in linhas), " | ".join(linhas)[:220])
-    checar(u"  dizendo que ele volta no proximo arranque",
-           any(u"próximo arranque" in l for l in linhas),
-           " | ".join(linhas)[:220])
-    checar(u"e o registro sai assim mesmo", not ov.ha_registro(d),
-           u"guardar faria todo arranque anunciar a mesma noite para sempre")
-
-    d2 = temp()
-    com_limpador(LimpadorFalso({"SysMain": "rodando"}))
-    ov.iniciar(pausar_servicos=True, pasta=d2)
-    sys.modules.pop("radai_cleaner", None)
-    class Quebrado(object):
-        def __getattr__(self, _):
-            raise ImportError("limpador quebrado")
-    sys.modules["radai_cleaner"] = Quebrado()
-    try:
-        r2 = ov.encerrar(pasta=d2)
-    finally:
-        sys.modules.pop("radai_cleaner", None)
-    checar(u"sem conseguir nem tentar, o registro FICA",
-           ov.ha_registro(d2),
-           u"aqui o proximo arranque tem o que tentar de verdade")
-    checar(u"  e o resultado diz que nao deu", r2["ok"] is False)
-
-
-def teste_a_lista_de_religar_e_fechada():
-    secao(u"religar tem lista fechada, e a trava e no modulo")
-    sys.modules.pop("radai_cleaner", None)
-    import radai_cleaner as LP
-    checar(u"a funcao existe", hasattr(LP, "iniciar_servico"))
-    for nome in ("Spooler", "WinDefend", "Vitrea", "", "SysMain "):
-        r = LP.iniciar_servico(nome)
-        checar(u"  recusa `%s`" % (nome or "(vazio)"), r["ok"] is False)
-    f = fonte("radai_cleaner.py")
-    i = f.find("def iniciar_servico")
-    corpo = f[i:f.find("\ndef ", i + 10)]
-    checar(u"e usa a MESMA lista de permitidos do parar",
-           "_NOMES_SERVICOS" in corpo)
-    checar(u"e a mesma lista de protegidos", "_protegido(" in corpo)
-    checar(u"e a chamada e `sc start`", '"sc", "start", nome' in corpo)
-    codigo = "\n".join(l for l in corpo.splitlines()
-                       if not l.lstrip().startswith("#"))
-    a = codigo.find('u"""')
-    if a >= 0:
-        codigo = codigo[:a] + codigo[codigo.find('"""', a + 4) + 3:]
-    checar(u"e nao mexe no tipo de inicializacao",
-           "sc config" not in codigo and "start=" not in codigo,
-           u"`sc start`, nunca `sc config start= auto`")
+    checar(u"o registro de um turno da versao anterior sai no arranque",
+           ov.apagar_registro_antigo(log=linhas.append, pasta=d) is True
+           and not os.path.exists(reg))
+    checar(u"  e o log diz o servico que ficou parado e quando ele volta",
+           any(u"SysMain" in l and u"arranque do Windows" in l
+               for l in linhas) and not any(u"DiagTrack" in l for l in linhas),
+           u" | ".join(linhas))
+    checar(u"sem registro, nada acontece e nada vai ao log",
+           ov.apagar_registro_antigo(log=linhas.append, pasta=d) is False
+           and len(linhas) == 1)
 
 
 def teste_o_parcial_leva_o_nome_de_quem_escreve():
@@ -649,7 +444,7 @@ def teste_a_frota_le_o_status_das_outras():
 
 
 def teste_a_tela_da_noite():
-    secao(u"a tela do turno: log, simbolos rodando e o que esta pausado")
+    secao(u"a tela do turno: log, simbolos rodando e as outras maquinas")
     f = fonte("radai_watcher.py")
     checar(u"ha a faixa do turno", 'id="ovFaixa"' in f)
     checar(u"ha o botao de abrir", 'id="btNoite"' in f)
@@ -658,23 +453,9 @@ def teste_a_tela_da_noite():
     checar(u"e um pulso pintado pelo JavaScript", "OV_PULSO" in f)
     checar(u"  animacao respeita quem pediu para nao animar",
            "prefers-reduced-motion" in f)
-    checar(u"a tela lista os servicos pausados", 'id="ovServicos"' in f)
+    checar(u"a tela nao lista mais servico pausado (a pausa saiu)",
+           'id="ovServicos"' not in f and "overnight_pausados" not in f)
     checar(u"e mostra as outras maquinas", 'id="ovFrota"' in f)
-
-    _liso = f
-    for _de, _para in ((u"á", "a"), (u"ã", "a"), (u"ç", "c"),
-                       (u"é", "e"), (u"ó", "o")):
-        _liso = _liso.replace(_de, _para)
-    checar(u"zero pausados aparece dizendo por que",
-           "frSemPausa" in f and "Nenhum servico pausado." in _liso)
-    checar(u"  e o motivo e nomeado (administrador ou ja parado)",
-           "administrador nesta estacao" in _liso
-           and "ja estavam parados" in _liso)
-    checar(u"  e as duas frases passam pelo dicionario",
-           f.count("data-radai-frase") >= 2
-           and "uiHTML(os_" in f)
-    checar(u"e o que nao religou aparece no fim",
-           "d.falhas.length" in f)
 
     for r in ("/api/overnight/iniciar", "/api/overnight/encerrar",
               "/api/overnight/frota"):
@@ -687,7 +468,7 @@ def teste_a_tela_da_noite():
 
     checar(u"durante a noite o `Desligar a fila` some",
            "if(bd && d.overnight) bd.style.display='none'" in f,
-           u"seria a saida que nao devolve os servicos")
+           u"seria a saida que nao encerra o turno")
 
 
 def teste_a_retomada_e_de_uma_maquina_so():
@@ -1044,12 +825,10 @@ def teste_o_arranque_nomeia_e_nao_fecha():
         checar(u"o navegador e o Teams são os sugeridos",
                "msedge.exe" in fechaveis and "ms-teams.exe" in fechaveis,
                fechaveis[:160])
-        lp = com_limpador(LimpadorFalso({"SysMain": "rodando"}))
+        sys.modules["radai_cleaner"] = type("SemLista", (object,), {})()
         linhas2 = RA._p_processos({}, rel)
         checar(u"sem a lista de protegidos, NADA é sugerido (o erro barato)",
                not any(u"Fechar e decisao" in l for l in linhas2), linhas2)
-        checar(u"e o arranque não parou serviço nenhum",
-               lp.parados == [] and lp.iniciados == [], lp.parados)
     finally:
         RA.processos_na_placa = velho_proc
         if velho_limpador is not None:
@@ -1077,21 +856,11 @@ class _TurnoDublado(object):
     def __init__(self):
         self.chamadas = []
 
-    def iniciar(self, pausar_servicos=True, log=None, pasta=""):
-        self.chamadas.append(("iniciar", bool(pausar_servicos)))
-        servs = ([{"nome": "SysMain", "acao": "parado"}]
-                 if pausar_servicos else [])
-        return {"ok": True, "servicos": servs, "msg": u""}
-
-    def encerrar(self, log=None, pasta="", motivo="encerrada"):
-        self.chamadas.append(("encerrar",))
-        return {"ok": True, "religados": 0, "falhas": []}
-
-    def estado(self, pasta=""):
-        return {"ativo": False, "n_pausados": 0, "pausados": []}
-
-    def restaurar_se_pendente(self, log=None, pasta=""):
-        return None
+    def __getattr__(self, nome):
+        def _chamada(*a, **k):
+            self.chamadas.append((nome,))
+            return {}
+        return _chamada
 
 
 def _aplicador_de_recarga(mod, atraso=0.0):
@@ -1172,7 +941,7 @@ def teste_o_card_do_turno_abre_quando_a_fila_chega_nele():
         fila.limpar()
         fila.pedir([{"uid": "1.2.826.9.1", "pasta": root, "rotulo": u"A"},
                     {"uid": "1.2.826.9.2", "pasta": root, "rotulo": u"B"}])
-        fila.overnight(True, pausar_servicos=False)
+        fila.overnight(True)
         _rodar(pausar=True)
         checar(u"com a fila PAUSADA, o turno nao abre (o card nao e a vez)",
                not falso.chamadas and not mod.STATE["overnight"],
@@ -1190,11 +959,14 @@ def teste_o_card_do_turno_abre_quando_a_fila_chega_nele():
         checar(u"a fila chegou no card: o turno ABRIU sozinho",
                mod.STATE["overnight"] is True and mod.STATE["ligado"] is True,
                str((mod.STATE["overnight"], mod.STATE["ligado"])))
-        checar(u"  UMA vez, com a pausa de servicos guardada no card (nao)",
-               falso.chamadas == [("iniciar", False)], str(falso.chamadas))
+        checar(u"  UMA vez, e sem tocar servico nenhum (o turno nao chama o "
+               u"radai_overnight)",
+               falso.chamadas == [] and u"\n".join(list(mod.LOGBUF)).count(
+                   u"OVERNIGHT RUN aberto") == 1, str(falso.chamadas))
         c = _card_do_turno(fila)
-        checar(u"  e o card virou «pronto» com o motivo",
-               c and c.get("estado") == "pronto"
+        checar(u"  e o card fica «rodando» com o motivo enquanto o turno esta "
+               u"aberto (nao some como pronto na abertura)",
+               c and c.get("estado") == "rodando"
                and u"turno aberto" in (c.get("motivo") or u""), str(c))
         log = u"\n".join(list(mod.LOGBUF))
         checar(u"  e o log diz que foi a fila que abriu",
@@ -1208,7 +980,7 @@ def teste_o_card_do_turno_abre_quando_a_fila_chega_nele():
         del falso.chamadas[:]
         fila.limpar()
         fila.pedir([{"uid": "1.2.826.9.4", "pasta": root, "rotulo": u"D"}])
-        fila.overnight(True, pausar_servicos=False)
+        fila.overnight(True)
         pausar_no_meio.append(1)
         try:
             _rodar()
@@ -1224,7 +996,7 @@ def teste_o_card_do_turno_abre_quando_a_fila_chega_nele():
         mod.ROOT = ""
         fila.limpar()
         fila.pedir([{"uid": "1.2.826.9.3", "pasta": root, "rotulo": u"C"}])
-        fila.overnight(True, pausar_servicos=True)
+        fila.overnight(True)
         _rodar()
         c = _card_do_turno(fila)
         checar(u"o turno que nao abre deixa o card «falhou»",
@@ -1241,6 +1013,51 @@ def teste_o_card_do_turno_abre_quando_a_fila_chega_nele():
         L._CFG.clear()
         L._CFG.update(guarda[0])
         L._uma_serie = guarda[1]
+        _devolver_turno(velho)
+        fila.limpar()
+
+
+def teste_o_card_que_voltou_do_disco_abre_e_a_estacao_fica_acordada():
+    secao(u"o card que voltou do disco abre o turno, e o turno aberto "
+          u"segura a estacao acordada")
+    import radai_batch as L
+    import radai_queue_state as fila
+    base = temp()
+    root = os.path.join(base, "share")
+    os.makedirs(root)
+    falso, velho = _com_turno_dublado()
+    guarda_estado = L.estado
+    try:
+        mod = _vigia_da_noite(base, root)
+        fila.limpar()
+        fila.pedir([{"uid": "1.2.826.9.7", "pasta": root, "rotulo": u"G"}])
+        fila.overnight(True)
+        checar(u"(isca) com serie manual na frente, abrir o programa nao abre "
+               u"o turno", mod.abrir_o_turno_que_voltou_da_fila() is None
+               and not mod.STATE["overnight"])
+        fila.limpar()
+        fila.overnight(True)
+        r = mod.abrir_o_turno_que_voltou_da_fila()
+        c = _card_do_turno(fila)
+        checar(u"sem nada na frente, o card que voltou do disco abre o turno",
+               bool(r and r.get("ok")) and mod.STATE["overnight"] is True,
+               str(r)[:200])
+        checar(u"  e o card fica «rodando»", c and c.get("estado") ==
+               "rodando", str(c))
+        mod.quem_esta_segmentando = lambda: None
+        L.estado = lambda: {}
+        mod.STATE["n_queue"] = 0
+        checar(u"com o turno aberto e a fila vazia, a estacao fica acordada",
+               mod.fila_ocupada() is True)
+        checar(u"  e o log diz por que",
+               u"energia: com o turno aberto" in u"\n".join(list(mod.LOGBUF)))
+        mod.overnight_encerrar()
+        checar(u"encerrado o turno, ela volta a poder suspender",
+               mod.fila_ocupada() is False)
+        checar(u"  e o card saiu da fila", _card_do_turno(fila) is None,
+               str(fila.cards()))
+    finally:
+        L.estado = guarda_estado
         _devolver_turno(velho)
         fila.limpar()
 
@@ -1263,7 +1080,7 @@ def teste_iniciar_sem_salvar_vale_so_para_o_turno():
         checar(u"(pre) o gravado e o share A", mod.ROOT == share_a, mod.ROOT)
 
         fila.limpar()
-        fila.overnight(True, pausar_servicos=False,
+        fila.overnight(True,
                        temporarios={"TASKS": "lung_nodules"})
         r = mod.overnight_iniciar()
         checar(u"chave fora de ROOT/MODALITIES/DAYS_BACK: o turno RECUSA",
@@ -1271,14 +1088,14 @@ def teste_iniciar_sem_salvar_vale_so_para_o_turno():
                and not mod.STATE["overnight"], str(r)[:300])
         checar(u"  e a lista de tasks nao mudou", "lung_nodules" not in
                mod.TASKS, str(mod.TASKS))
-        fila.overnight(True, pausar_servicos=False,
+        fila.overnight(True,
                        temporarios={"DAYS_BACK": u"trinta"})
         r = mod.overnight_iniciar()
         checar(u"DAYS_BACK que nao e numero: RECUSA", r.get("ok") is False
                and u"DAYS_BACK" in (r.get("erro") or u""), str(r)[:300])
 
         nao_existe = os.path.join(base, "NAO_EXISTE_PACIENTE_X")
-        fila.overnight(True, pausar_servicos=False,
+        fila.overnight(True,
                        temporarios={"ROOT": nao_existe})
         r = mod.overnight_iniciar()
         checar(u"a pasta que nao existe: o turno RECUSA, com o laudo",
@@ -1303,7 +1120,7 @@ def teste_iniciar_sem_salvar_vale_so_para_o_turno():
                      u"Permission denied: '%s\\_radai_teste_escrita_1.tmp')"
                      % cam)}
         try:
-            fila.overnight(True, pausar_servicos=False,
+            fila.overnight(True,
                            temporarios={"ROOT": nao_existe})
             r = mod.overnight_iniciar()
         finally:
@@ -1318,7 +1135,7 @@ def teste_iniciar_sem_salvar_vale_so_para_o_turno():
                and u"grava" in c.get("motivo").lower(), str(c))
 
         fila.overnight(False)
-        fila.overnight(True, pausar_servicos=False,
+        fila.overnight(True,
                        temporarios={"ROOT": share_b, "MODALITIES": u"CT,MR",
                                     "DAYS_BACK": u"30"})
         r = mod.overnight_iniciar()
@@ -1342,10 +1159,10 @@ def teste_iniciar_sem_salvar_vale_so_para_o_turno():
                and st.get("recarga_pendente") is False, str(st.get(
                    "turno_temporario")))
         c = _card_do_turno(fila)
-        checar(u"  e o card virou «pronto»", c and c.get("estado") == "pronto",
+        checar(u"  e o card fica «rodando»", c and c.get("estado") == "rodando",
                str(c))
 
-        fila.overnight(True, pausar_servicos=False,
+        fila.overnight(True,
                        temporarios={"ROOT": share_a})
         n_chamadas = len(falso.chamadas)
         r = mod.abrir_turno_pela_fila()
@@ -1354,7 +1171,7 @@ def teste_iniciar_sem_salvar_vale_so_para_o_turno():
                u"a pasta", r.get("ja_aberto") is True and mod.ROOT == share_b
                and len(falso.chamadas) == n_chamadas, str(r)[:200])
         checar(u"  e o card diz que os valores dele NAO foram aplicados",
-               c and c.get("estado") == "pronto"
+               c and c.get("estado") == "rodando"
                and u"nao foram aplicados" in (c.get("motivo") or u""), str(c))
 
         mod.overnight_encerrar()
@@ -1625,7 +1442,7 @@ def teste_o_root_trocado_no_turno_vale_no_seguinte():
         fila.limpar()
         mod = _vigia_da_noite(base, share_a)
         parar, _t = _aplicador_de_recarga(mod)
-        fila.overnight(True, pausar_servicos=False)
+        fila.overnight(True)
         r = mod.overnight_iniciar()
         checar(u"(pre) o turno abre na pasta gravada", r.get(u"ok") is True
                and mod.ROOT == share_a, str((r, mod.ROOT))[:200])
@@ -1655,7 +1472,7 @@ def teste_o_root_trocado_no_turno_vale_no_seguinte():
                and not mod.pedir_recarga().get(u"root_no_proximo_turno"))
         mod.esperar_recarga(10)
 
-        fila.overnight(True, pausar_servicos=False)
+        fila.overnight(True)
         r = mod.overnight_iniciar()
         mod.ROOT_DO_TURNO.clear()
         radai_config.escrever(str(mod.CFG_PATH), {"ROOT": share_a})
@@ -1678,14 +1495,7 @@ def main():
     print(u"  O OVERNIGHT RUN — o turno da noite e o que ele mexe na estacao")
     print(u"=" * 70)
     for t in (teste_o_modulo_e_so_stdlib,
-              teste_o_turno_abre_e_fecha,
-              teste_o_registro_nasce_antes_da_primeira_parada,
-              teste_a_queda_de_energia,
-              teste_abrir_duas_vezes_nao_perde_o_estado_original,
-              teste_sem_registro_nao_para_nada,
-              teste_o_negado_nao_vira_pausado,
-              teste_o_que_nao_religou_nao_vira_alarme_eterno,
-              teste_a_lista_de_religar_e_fechada,
+              teste_a_pausa_de_servicos_saiu,
               teste_o_parcial_leva_o_nome_de_quem_escreve,
               teste_o_caminho_do_paciente_nao_vai_para_o_share,
               teste_o_status_dir_nao_pode_sincronizar,
@@ -1701,6 +1511,7 @@ def main():
               teste_a_calibracao_abre_cada_turno,
               teste_o_arranque_nomeia_e_nao_fecha,
               teste_o_card_do_turno_abre_quando_a_fila_chega_nele,
+              teste_o_card_que_voltou_do_disco_abre_e_a_estacao_fica_acordada,
               teste_iniciar_sem_salvar_vale_so_para_o_turno,
               teste_a_recarga_pendente_e_esperada_ou_dita,
               teste_a_folha_do_turno_so_le_a_pasta_ao_abrir,

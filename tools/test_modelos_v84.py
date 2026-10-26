@@ -125,6 +125,184 @@ def teste_o_md5_reprova_o_arquivo_trocado():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def teste_o_registro_aceita_o_par_original_e_enxuto():
+    secao(u"o registro aceita o checkpoint original e o enxuto (sem o "
+          u"estado do otimizador)")
+    import re
+    import radai_models as M
+    from pathlib import Path
+    esperado = {"hnlnl": 10, "cranio_buti": 1, "moose": 4, "cads_open": 1}
+    for ident, n in sorted(esperado.items()):
+        m = M.MODELOS[ident]
+        enx = m.get("enxuto") or {}
+        checar(u"%s declara o enxuto de %d checkpoint(s)" % (ident, n),
+               len(enx) == n, str(sorted(enx)))
+        checar(u"  cada um com bytes inteiros e sha256 de 64 hexa",
+               all(isinstance(b, int) and b > 0
+                   and re.match(r"^[0-9a-f]{64}$", s or "")
+                   for b, s in enx.values()))
+        orig = dict(m.get("arquivos") or ())
+        orig.update(dict(m.get("conteudo") or ()))
+        checar(u"  e menor que o original onde o registro mede o original",
+               all(enx[r][0] < orig[r] for r in enx if r in orig))
+    hn = M.MODELOS["hnlnl"]
+    checar(u"no hnlnl, os dez checkpoints do conteúdo têm o enxuto",
+           set(hn["enxuto"]) == set(r for r, _t in hn["conteudo"]
+                                    if r.endswith(".model")))
+    cr = M.MODELOS["cranio_buti"]
+    checar(u"no cranio_buti, o checkpoint dos arquivos tem o enxuto",
+           set(cr["enxuto"]) == set(r for r, _t in cr["arquivos"]
+                                    if r.endswith(".pth")))
+
+    d = tempfile.mkdtemp(prefix="radai_teste_md5_")
+    velho = os.environ.get("RADAI_MODELOS_DIR")
+    sha = lambda b: hashlib.sha256(b).hexdigest()
+    original, enxuto = b"o" * 10, b"e" * 4
+    try:
+        os.environ["RADAI_MODELOS_DIR"] = d
+        M.MODELOS["fantoma_enx"] = {
+            "nome": u"fantoma", "motor": "x", "embutido": False, "repo": "x/y",
+            "url_direta": "file:///" + os.path.join(d, "nao_existe.bin")
+            .replace("\\", "/"),
+            "arquivos": [("ck.pth", 10)], "sha256": {"ck.pth": sha(original)},
+            "enxuto": {"ck.pth": (4, sha(enxuto))},
+            "licenca": u"x", "uso_permitido": "livre"}
+        alvo = Path(d) / "fantoma_enx" / "ck.pth"
+        alvo.parent.mkdir(parents=True)
+
+        def baixou():
+            try:
+                return M.baixar("fantoma_enx").get("pulados"), u""
+            except Exception as e:
+                return None, u"%s: %s" % (type(e).__name__, e)
+        alvo.write_bytes(enxuto)
+        checar(u"o enxuto conta como instalado",
+               M.estado_do_modelo("fantoma_enx")["instalado"],
+               str(M.estado_do_modelo("fantoma_enx")))
+        checar(u"  e o baixar o reconhece e não vai à origem",
+               baixou()[0] == ["ck.pth"] and alvo.read_bytes() == enxuto,
+               str(baixou()))
+        alvo.write_bytes(b"x" * 4)
+        checar(u"(isca) com o tamanho do enxuto e outro sha256, o baixar não "
+               u"aceita e vai à origem", baixou()[0] is None, str(baixou()))
+        alvo.write_bytes(b"x" * 7)
+        checar(u"(isca) tamanho que não é nem o original nem o enxuto não "
+               u"conta como instalado",
+               not M.estado_do_modelo("fantoma_enx")["instalado"])
+        alvo.write_bytes(original)
+        checar(u"o original continua aceito",
+               M.estado_do_modelo("fantoma_enx")["instalado"]
+               and baixou()[0] == ["ck.pth"])
+
+        cont = {"conteudo": [("a/ck.model", 10)],
+                "sha256": {"a/ck.model": sha(original)},
+                "enxuto": {"a/ck.model": (4, sha(enxuto))}}
+        pasta = Path(d) / "fantoma_cont"
+        (pasta / "a").mkdir(parents=True)
+
+        def confere():
+            try:
+                M._conferir_conteudo(cont, pasta)
+                return u""
+            except Exception as e:
+                return u"%s" % e
+        (pasta / "a" / "ck.model").write_bytes(enxuto)
+        checar(u"no conteúdo extraído (o formato do hnlnl), o enxuto não "
+               u"falta", M._falta_do_conteudo(cont, pasta) == [])
+        checar(u"  e confere pelo sha256 do enxuto", confere() == u"",
+               confere())
+        (pasta / "a" / "ck.model").write_bytes(b"x" * 4)
+        checar(u"(isca) o enxuto com outro sha256 reprova",
+               u"sha256" in confere(), confere())
+    finally:
+        M.MODELOS.pop("fantoma_enx", None)
+        if velho is None:
+            os.environ.pop("RADAI_MODELOS_DIR", None)
+        else:
+            os.environ["RADAI_MODELOS_DIR"] = velho
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def teste_o_zip_ja_extraido_nao_baixa_de_novo():
+    secao(u"o zip já extraído e conferido (a marca) não é baixado de novo "
+          u"num preparo repetido")
+    import zipfile
+    import radai_models as M
+    from pathlib import Path
+    for ident in ("moose", "cads_open"):
+        m = M.MODELOS[ident]
+        checar(u"%s: todo arquivo baixado é um zip que se extrai" % ident,
+               set(M.zips_a_extrair(m))
+               == set(r for r, _t in m.get("arquivos") or ()),
+               str(M.zips_a_extrair(m)))
+
+    d = tempfile.mkdtemp(prefix="radai_teste_md5_")
+    velho = os.environ.get("RADAI_MODELOS_DIR")
+    morto = "file:///" + os.path.join(d, "nao_existe.zip").replace("\\", "/")
+    try:
+        os.environ["RADAI_MODELOS_DIR"] = d
+        fonte2 = Path(d) / "origem_z2.zip"
+        with zipfile.ZipFile(str(fonte2), "w") as z:
+            z.writestr("b/ck.pth", b"b" * 32)
+        n2 = fonte2.stat().st_size
+
+        def fantoma(ident, **extra):
+            m = {"nome": u"fantoma", "motor": "x", "embutido": False,
+                 "repo": "x/y", "url_direta": morto,
+                 "arquivos": [("z1.zip", 100)], "extrair": "z1.zip",
+                 "licenca": u"x", "uso_permitido": "livre"}
+            m.update(extra)
+            M.MODELOS[ident] = m
+            p = Path(d) / ident
+            p.mkdir(parents=True, exist_ok=True)
+            return p
+
+        def baixou(ident):
+            try:
+                r = M.baixar(ident)
+                return (r.get("baixados"), r.get("pulados")), u""
+            except Exception as e:
+                return None, u"%s: %s" % (type(e).__name__, e)
+
+        p = fantoma("fantoma_zip")
+        (p / "pesos_extraidos.txt").write_text(u"x", encoding="utf-8")
+        r, erro = baixou("fantoma_zip")
+        checar(u"com a marca da extração, o zip apagado não vai à origem",
+               r == ([], ["z1.zip"]) and not (p / "z1.zip").exists(),
+               str((r, erro)))
+        (p / "pesos_extraidos.txt").unlink()
+        r, erro = baixou("fantoma_zip")
+        checar(u"(isca) sem a marca, o zip que falta vai à origem",
+               r is None and erro, str((r, erro)))
+
+        p = fantoma("fantoma_zip_cont", conteudo=[("a/ck.pth", 10)])
+        (p / "pesos_extraidos.txt").write_text(u"x", encoding="utf-8")
+        r, erro = baixou("fantoma_zip_cont")
+        checar(u"(isca) com a marca e o conteúdo extraído faltando, o zip "
+               u"vai à origem", r is None and erro, str((r, erro)))
+
+        p = fantoma("fantoma_zip_dois",
+                    arquivos=[("z1.zip", 100), ("z2.zip", n2)],
+                    extrair=("z1.zip", "z2.zip"),
+                    url_por_arquivo={"z2.zip": "file:///" + str(fonte2)
+                                     .replace("\\", "/")})
+        M._marca_do_zip(p, "z1.zip").write_text(u"x", encoding="utf-8")
+        r, erro = baixou("fantoma_zip_dois")
+        checar(u"com a marca de um zip só, ele fica e o outro é baixado e "
+               u"extraído", r == (["z2.zip"], ["z1.zip"])
+               and (p / "b" / "ck.pth").is_file()
+               and (p / "pesos_extraidos.txt").is_file()
+               and not (p / "z1.zip").exists(), str((r, erro)))
+    finally:
+        for ident in ("fantoma_zip", "fantoma_zip_cont", "fantoma_zip_dois"):
+            M.MODELOS.pop(ident, None)
+        if velho is None:
+            os.environ.pop("RADAI_MODELOS_DIR", None)
+        else:
+            os.environ["RADAI_MODELOS_DIR"] = velho
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def teste_os_em_breve_nao_baixam_nem_rodam():
     secao(u"TLI e os 19 órgãos ficam fora do pacote, e sem resto no código")
     import radai_models as M
@@ -742,6 +920,8 @@ def main():
     for t in (teste_o_registro_tem_o_do_cranio,
               teste_a_url_do_hugging_face_e_fixa,
               teste_o_md5_reprova_o_arquivo_trocado,
+              teste_o_registro_aceita_o_par_original_e_enxuto,
+              teste_o_zip_ja_extraido_nao_baixa_de_novo,
               teste_os_em_breve_nao_baixam_nem_rodam,
               teste_peso_novo_muda_a_impressao_de_requisitos,
               teste_as_descricoes_sao_ascii_e_honestas,

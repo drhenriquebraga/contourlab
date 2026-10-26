@@ -77,6 +77,21 @@ def json_de(corpo):
         return None
 
 
+def varrer_lote(pasta, prazo=90.0):
+    cod, corpo, _ = postar("/api/varrer/iniciar",
+                           {"uso": "lote", "pasta": pasta, "dias": 0})
+    j = json_de(corpo) or {}
+    fim = time.time() + prazo
+    while cod == 200 and j.get("v") and not j.get("fim") and time.time() < fim:
+        time.sleep(0.3)
+        cod, corpo, _ = postar("/api/varrer/estado", {"v": j["v"]})
+        j = json_de(corpo) or {}
+    fora = dict(j.get("extra") or {})
+    fora.update(series=list(j.get("linhas") or []), erro=j.get("erro"),
+                fim=j.get("fim"))
+    return cod, fora
+
+
 def perfil_primeiro_dia():
     secao(u"1. PRIMEIRO DIA: abrir, aceitar, navegar, voltar")
 
@@ -132,38 +147,37 @@ def perfil_primeiro_dia():
 def perfil_rotina(root, vazia, so_lixo, curta):
     secao(u"2. ROTINA: apontar pasta e entender a resposta")
 
-    cod, corpo, _ = postar("/api/lote/varrer", {"pasta": root})
-    j = json_de(corpo) or {}
-    checar(u"a pasta com exames devolve series",
-           cod == 200 and len(j.get("series") or []) >= 1,
-           corpo[:200])
+    cod, j = varrer_lote(root)
+    checar(u"a pasta com exames devolve series (a varredura da tela)",
+           cod == 200 and len(j.get("series") or []) >= 1, str(j)[:200])
 
-    cod, corpo, _ = postar("/api/lote/varrer", {"pasta": vazia})
-    j = json_de(corpo) or {}
+    cod, j = varrer_lote(vazia)
     checar(u"pasta vazia: zero series, sem erro",
-           cod == 200 and not j.get("erro") and not (j.get("series") or []),
-           corpo[:200])
+           cod == 200 and j.get("fim") and not j.get("erro")
+           and not (j.get("series") or []), str(j)[:200])
     checar(u"  e sem descartadas (nao ha o que descartar)",
            not (j.get("curtas") or []), j.get("curtas"))
 
-    cod, corpo, _ = postar("/api/lote/varrer", {"pasta": so_lixo})
-    j = json_de(corpo) or {}
+    cod, j = varrer_lote(so_lixo)
     checar(u"pasta so com lixo binario: zero series, e rapido",
-           cod == 200 and not (j.get("series") or []), corpo[:200])
+           cod == 200 and j.get("fim") and not (j.get("series") or []),
+           str(j)[:200])
 
-    cod, corpo, _ = postar("/api/lote/varrer", {"pasta": curta})
-    j = json_de(corpo) or {}
+    cod, j = varrer_lote(curta)
     checar(u"serie curta: zero aceitas...",
-           cod == 200 and not (j.get("series") or []), corpo[:200])
+           cod == 200 and j.get("fim") and not (j.get("series") or []),
+           str(j)[:200])
     checar(u"  ...MAS ela diz quantas achou e com quantos cortes",
            bool(j.get("curtas")) and j.get("piso"),
            u"curtas=%s piso=%s" % (j.get("curtas"), j.get("piso")))
 
-    cod, corpo, _ = postar("/api/lote/varrer", {"pasta": root + "_nao_existe"})
-    j = json_de(corpo) or {}
+    cod, j = varrer_lote(root + "_nao_existe")
     checar(u"pasta inexistente: diz o que houve",
-           cod == 200 and (j.get("erro") or not (j.get("series") or [])),
-           corpo[:200])
+           cod == 200 and j.get("erro") and not (j.get("series") or []),
+           str(j)[:200])
+    cod, _c, _ = postar("/api/lote/varrer", {"pasta": root})
+    checar(u"  e o POST unico antigo saiu (a tela varre pela casca)",
+           cod in (404, 405), cod)
 
     cod, corpo, _ = postar("/api/pastas", {"caminho": ""})
     j = json_de(corpo) or {}
@@ -218,17 +232,18 @@ def perfil_experiente(root):
 def perfil_inesperado(root):
     secao(u"4. O INESPERADO: o que ninguem previu, e acontece")
 
-    cod, corpo, _ = pegar("/api/lote/varrer", dados=b"isto nao e json",
+    cod, corpo, _ = pegar("/api/varrer/iniciar", dados=b"isto nao e json",
                           tipo="application/json", metodo="POST")
     checar(u"corpo que nao e' JSON: responde, nao quebra",
            cod in (200, 400, 422), u"%s %s" % (cod, corpo[:120]))
 
-    cod, corpo, _ = postar("/api/lote/varrer", {"paster": root})
+    cod, corpo, _ = postar("/api/varrer/iniciar", {"uso": "lote", "paster": root})
     checar(u"chave errada: responde, nao quebra", cod in (200, 400, 422),
            u"%s %s" % (cod, corpo[:120]))
 
     for valor in (123, None, [], {"a": 1}, True):
-        cod, corpo, _ = postar("/api/lote/varrer", {"pasta": valor})
+        cod, corpo, _ = postar("/api/varrer/iniciar",
+                               {"uso": "lote", "pasta": valor, "dias": 0})
         checar(u"pasta=%r: responde, nao quebra" % (valor,),
                cod in (200, 400, 422), u"%s %s" % (cod, corpo[:100]))
 
@@ -236,23 +251,45 @@ def perfil_inesperado(root):
             (root + "\\..\\..\\..\\Windows", u"travessia com .."),
             ("\\\\maquina_que_nao_existe\\share", u"UNC inexistente"),
             ("CON", u"dispositivo do DOS"),
-            ("C:\\Windows\\System32", u"pasta do sistema"),
             ("", u"vazio")):
-        cod, corpo, _ = postar("/api/lote/varrer", {"pasta": caminho},
-                               timeout=90)
-        j = json_de(corpo) or {}
-        checar(u"%s: responde sem travar" % rot, cod == 200, u"%s" % cod)
-        if rot == u"pasta do sistema":
-            checar(u"  e nao devolve serie de dentro do Windows",
-                   not (j.get("series") or []), len(j.get("series") or []))
+        cod, j = varrer_lote(caminho)
+        checar(u"%s: responde sem travar" % rot, cod == 200 and j.get("fim"),
+               u"%s %s" % (cod, str(j)[:100]))
+
+    import time as _time
+    t0 = _time.time()
+    cod, corpo, _ = postar("/api/varrer/iniciar",
+                           {"uso": "lote", "pasta": "C:\\Windows\\System32",
+                            "dias": 0}, timeout=15)
+    j = json_de(corpo) or {}
+    checar(u"pasta do sistema: a varredura da tela responde na hora, "
+           u"sem esperar a leitura", cod == 200 and bool(j.get("v"))
+           and _time.time() - t0 < 10, u"%s %.1f s" % (cod, _time.time() - t0))
+    if j.get("v"):
+        cod2, corpo2, _ = postar("/api/varrer/estado", {"v": j["v"]}, timeout=15)
+        checar(u"  e o estado responde enquanto ela le", cod2 == 200
+               and (json_de(corpo2) or {}).get("v") == j["v"], cod2)
+        postar("/api/varrer/parar", {"v": j["v"]}, timeout=15)
+        fim = _time.time() + 60.0
+        e = {}
+        while _time.time() < fim:
+            e = json_de(postar("/api/varrer/estado", {"v": j["v"]},
+                               timeout=15)[1]) or {}
+            if e.get("fim"):
+                break
+            _time.sleep(0.3)
+        checar(u"  e «Parar a leitura» encerra a varredura",
+               e.get("fim") is True and e.get("parado") is True, str(e)[:120])
+        checar(u"  e nao devolve serie de dentro do Windows",
+               not (e.get("linhas") or []), len(e.get("linhas") or []))
 
     for nome, rot in ((u"pasta com acento çãé", u"acento"),
                       (u"pasta com espaço", u"espaco"),
                       (u"検査フォルダ", u"japones"),
                       (u"p" * 200, u"nome de 200 letras")):
-        cod, corpo, _ = postar("/api/lote/varrer",
-                               {"pasta": os.path.join(root, nome)})
-        checar(u"nome %s: responde" % rot, cod == 200, u"%s" % cod)
+        cod, j = varrer_lote(os.path.join(root, nome))
+        checar(u"nome %s: responde" % rot, cod == 200 and j.get("fim"),
+               u"%s" % cod)
 
     for caminho in ("..\\..", "C:", "\\\\", "//", "\x00", "a\tb\nc"):
         cod, corpo, _ = postar("/api/pastas", {"caminho": caminho})
@@ -271,7 +308,8 @@ def perfil_inesperado(root):
     cod, corpo, _ = pegar("/isto/nao/existe")
     checar(u"rota inexistente: 404, e nao 500", cod == 404, cod)
 
-    cod, corpo, _ = postar("/api/lote/varrer", {"pasta": "C:\\" + "x" * 100000})
+    cod, corpo, _ = postar("/api/varrer/iniciar",
+                           {"uso": "lote", "pasta": "C:\\" + "x" * 100000})
     checar(u"corpo de 100 mil caracteres: responde",
            cod in (200, 400, 413, 422), u"%s" % cod)
 
@@ -932,7 +970,11 @@ def main():
                 "LOG_DIR=%s\n" % (root, PORTA, os.path.join(base, "log")))
     env = dict(os.environ, RADAI_CONFIG=cfg, RADAI_MACHINE="PC_INTERACOES",
                RADAI_CALIB_DIR=acervo, LOCALAPPDATA=os.path.join(base, "ad"),
+               RADAI_REGISTRO_DIR=os.path.join(base, "registro"),
                PYTHONIOENCODING="utf-8:replace")
+    # GUARDA: o vigia importado no proprio processo le o config e grava o log; sem isto, os da pasta app de quem roda.
+    for _k in ("RADAI_CONFIG", "RADAI_CALIB_DIR", "RADAI_REGISTRO_DIR"):
+        os.environ[_k] = env[_k]
     proc = subprocess.Popen(
         [sys.executable, _componentes.fonte("app/radai_watcher.py")],
         env=env, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)

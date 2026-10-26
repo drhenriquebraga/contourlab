@@ -1,213 +1,38 @@
 # -*- coding: utf-8 -*-
 import json
 import os
-import socket
 import time
 
-VERSAO_OVERNIGHT = "1.0"
-
-NOME_REGISTRO = "_overnight_servicos.json"
-
-ENCERRAMENTOS = ("encerrada", "interrompida")
+NOME_REGISTRO_ANTIGO = "_overnight_servicos.json"
 
 
-def _maquina():
+def apagar_registro_antigo(log=None, pasta=""):
+    base = str(pasta or "").strip() or os.path.dirname(os.path.abspath(__file__))
+    p = os.path.join(base, NOME_REGISTRO_ANTIGO)
+    if not os.path.isfile(p):
+        return False
+    pausados = []
     try:
-        return (os.environ.get("COMPUTERNAME") or socket.gethostname()
-                or "maquina")
-    except Exception:
-        return "maquina"
-
-
-def caminho_do_registro(pasta=""):
-    base = str(pasta or "").strip()
-    if not base:
-        base = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base, NOME_REGISTRO)
-
-
-def _ler(pasta=""):
-    try:
-        p = caminho_do_registro(pasta)
-        if not os.path.isfile(p):
-            return None
         with open(p, "r", encoding="utf-8") as f:
             d = json.load(f)
-        return d if isinstance(d, dict) else None
+        pausados = [str(s.get("nome") or "")[:40]
+                    for s in (d.get("servicos") or [])
+                    if isinstance(s, dict) and s.get("acao") == "parado"]
     except Exception:
-        return None
-
-
-def _gravar(dado, pasta=""):
-    p = caminho_do_registro(pasta)
-    tmp = "%s.%d.parcial" % (p, os.getpid())
+        pass
     try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(dado, f, ensure_ascii=False, indent=1)
-        os.replace(tmp, p)
-        return True
-    except Exception:
-        try:
-            os.remove(tmp)
-        except Exception:
-            pass
-        return False
-
-
-def _apagar(pasta=""):
-    try:
-        os.remove(caminho_do_registro(pasta))
-        return True
+        os.remove(p)
     except Exception:
         return False
-
-
-def ha_registro(pasta=""):
-    return _ler(pasta) is not None
-
-
-def estado(pasta=""):
-    d = _ler(pasta) or {}
-    servicos = d.get("servicos") or []
-    pausados = [s for s in servicos if s.get("acao") == "parado"]
-    desde = float(d.get("desde") or 0)
-    return {
-        "ativo": bool(d),
-        "maquina": d.get("maquina") or _maquina(),
-        "desde": desde,
-        "horas": (max(0.0, time.time() - desde) / 3600.0) if desde else 0.0,
-        "servicos": servicos,
-        "pausados": [s.get("nome") for s in pausados],
-        "n_pausados": len(pausados),
-        "versao": d.get("versao") or "",
-    }
-
-
-def iniciar(pausar_servicos=True, log=None, pasta=""):
-    def _diz(m):
-        if log:
-            try:
-                log(m)
-            except Exception:
-                pass
-
-    ja = _ler(pasta)
-    if ja:
-        _diz(u"o overnight run desta máquina já estava aberto desde %s"
-             % _quando(ja.get("desde")))
-        return {"ok": True, "ja_estava": True,
-                "servicos": ja.get("servicos") or [],
-                "msg": u"já estava aberto"}
-
-    servicos = []
-    if pausar_servicos:
-        try:
-            import radai_cleaner
-            for s in radai_cleaner.estado_dos_servicos():
-                servicos.append({"nome": s["nome"], "antes": s["estado"],
-                                 "acao": "", "msg": ""})
-        except Exception as e:
-            _diz(u"não consegui ler o estado dos serviços (%s) — a noite abre "
-                 u"assim mesmo, sem pausar nada" % str(e)[:120])
-            servicos = []
-
-    dado = {"versao": VERSAO_OVERNIGHT, "maquina": _maquina(),
-            "desde": time.time(), "pid": os.getpid(), "servicos": servicos}
-    if not _gravar(dado, pasta):
-        _diz(u"não consegui gravar o registro do overnight run — os serviços "
-             u"NÃO foram pausados, para não mexer na estação sem rastro")
-        return {"ok": False, "ja_estava": False, "servicos": [],
-                "msg": u"não consegui gravar o registro"}
-
-    if not servicos:
-        _diz(u"overnight run aberto (sem pausar serviço nenhum)")
-        return {"ok": True, "ja_estava": False, "servicos": [],
-                "msg": u"aberto"}
-
-    import radai_cleaner
-    parados = 0
-    for s in servicos:
-        if s["antes"] != "rodando":
-            s["acao"] = "nao_mexido"
-            continue
-        r = radai_cleaner.parar_servico(s["nome"])
-        s["acao"] = "parado" if r.get("ok") else "falhou"
-        s["msg"] = str(r.get("msg") or "")[:160]
-        if r.get("ok"):
-            parados += 1
-        _gravar(dado, pasta)
-    _diz(u"overnight run aberto — %d serviço(s) pausado(s) para liberar "
-         u"memória" % parados)
-    return {"ok": True, "ja_estava": False, "servicos": servicos,
-            "msg": u"%d pausado(s)" % parados}
-
-
-def encerrar(log=None, pasta="", motivo="encerrada"):
-    def _diz(m):
-        if log:
-            try:
-                log(m)
-            except Exception:
-                pass
-
-    d = _ler(pasta)
-    if not d:
-        return {"ok": True, "religados": 0, "falhas": [],
-                "msg": u"não havia overnight run aberto"}
-
-    servicos = d.get("servicos") or []
-    religados, falhas = 0, []
-    try:
-        import radai_cleaner
-    except Exception as e:
-        _diz(u"não consegui carregar o limpador para religar os serviços "
-             u"(%s). O registro FICA, e a próxima abertura do programa "
-             u"tenta de novo." % str(e)[:120])
-        return {"ok": False, "religados": 0,
-                "falhas": [s.get("nome") for s in servicos],
-                "msg": u"limpador indisponível"}
-
-    for s in servicos:
-        if s.get("acao") != "parado":
-            continue
-        r = radai_cleaner.iniciar_servico(s.get("nome"))
-        if r.get("ok"):
-            religados += 1
-        else:
-            falhas.append(u"%s (%s)" % (s.get("nome"), r.get("msg") or ""))
-    _apagar(pasta)
-    if falhas:
-        _diz(u"overnight run %s — %d serviço(s) religado(s); %d não voltaram "
-             u"e voltam sozinhos no próximo arranque da estação: %s"
-             % (motivo, religados, len(falhas), "; ".join(falhas[:4])))
-    else:
-        _diz(u"overnight run %s — %d serviço(s) religado(s), a estação está "
-             u"como estava" % (motivo, religados))
-    return {"ok": True, "religados": religados, "falhas": falhas,
-            "msg": u"%d religado(s)" % religados}
-
-
-def restaurar_se_pendente(log=None, pasta=""):
-    d = _ler(pasta)
-    if not d:
-        return {"ok": True, "havia": False, "religados": 0, "falhas": []}
     if log:
         try:
-            log(u"havia um overnight run aberto desde %s que não foi "
-                u"encerrado — a estação caiu ou o programa foi fechado à "
-                u"força. Devolvendo os serviços." % _quando(d.get("desde")))
+            log(u"apagado o registro de um turno antigo que pausava servicos%s; "
+                u"esta versao nao pausa servico nenhum, e o que ficou parado "
+                u"volta no proximo arranque do Windows"
+                % ((u" (%s)" % ", ".join(pausados)) if pausados else u""))
         except Exception:
             pass
-    r = encerrar(log=log, pasta=pasta, motivo="interrompida")
-    r["havia"] = True
-    return r
-
-
-def _quando(ts):
-    try:
-        return time.strftime("%d/%m %H:%M", time.localtime(float(ts or 0)))
-    except Exception:
-        return "?"
+    return True
 
 
 def frota(status_dir, eu="", parado_min=20.0):

@@ -107,13 +107,13 @@ MOTORES = (
     {"cod": "hnlnl", "rotulo": u"Níveis cervicais",
      "lento": False, "regiao": CABECA_PESCOCO, "modalidade": "CT",
      "caixa": (u"Níveis cervicais — só em série com a cabeça no campo; "
-               u"nomes de Grégoire pelo mapa dos autores, e no OAR só a "
+               u"nomes de Grégoire pelo mapa dos autores, e no STUDY só a "
                u"união e as parótidas do nível VIII"),
      "ajuda": (u"os 20 níveis linfonodais cervicais, com os nomes de Grégoire "
                u"(Lvl_Ia a Lvl_VIIb) pelo mapa dos autores do modelo. Só saem "
                u"em série com a cabeça no campo: o portão exige o encéfalo, e "
                u"numa TC de tórax não sai nada — o log diz por quê. Os níveis "
-               u"entram no FULL; no OAR entram a LNL_UNION, união anatômica "
+               u"entram no FULL; no STUDY entram a LNL_UNION, união anatômica "
                u"não aprovada que não é OAR nem CTV, e as parótidas do nível "
                u"VIII menos o esternocleidomastoide. Pesos CC0 (Weissmann et "
                u"al. 2023)")},
@@ -121,7 +121,7 @@ MOTORES = (
      "regiao": CRANIO, "modalidade": "CT", "no_full": True,
      "caixa": (u"Encéfalo em TC — tronco encefálico, quiasma, cerebelo, "
                u"ventrículos e linha média; só com o encéfalo no campo"),
-     "ajuda": (u"Tronco encefálico e quiasma óptico (FULL e OAR); cerebelo, "
+     "ajuda": (u"Tronco encefálico e quiasma óptico (FULL e STUDY); cerebelo, "
                u"ventrículos e linha média (só FULL). Só com o encéfalo no "
                u"campo. Pesos MIT (Buti et al. 2025)")},
 )
@@ -379,13 +379,13 @@ PROTOCOLOS = (
     {"cod": "cranio", "rotulo": u"Crânio", "modalidade": "CT",
      "ajuda": (u"Glândulas e cavidades da cabeça (olhos, cristalinos, nervos "
                u"ópticos, conduto auditivo), as estruturas craniofaciais e o "
-               u"encéfalo em TC (tronco e quiasma também no OAR)."),
+               u"encéfalo em TC (tronco e quiasma também no STUDY)."),
      "tasks": ("head_glands_cavities", "craniofacial_structures"),
      "motores": ("cranio_ct",)},
     {"cod": "cabeca_pescoco", "rotulo": u"Cabeça e Pescoço avançado",
      "modalidade": "CT",
      "ajuda": (u"As cinco bibliotecas acima da clavícula, os 20 níveis "
-               u"cervicais (no FULL; no OAR só a LNL_UNION, que não é OAR nem "
+               u"cervicais (no FULL; no STUDY só a LNL_UNION, que não é OAR nem "
                u"CTV, e as parótidas do nível VIII) e o encéfalo em TC. "
                u"Órbita e dentes são tasks avulsas, cada uma no seu arquivo."),
      "tasks": ("head_glands_cavities", "headneck_muscles",

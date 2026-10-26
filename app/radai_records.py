@@ -32,8 +32,33 @@ def _garantir(caminho):
     return caminho
 
 
+_SEGREDO_NA_MEMORIA = {}
+
+
+def _pasta_que_sincroniza(pasta):
+    try:
+        import radai_archive
+        sim, motivo = radai_archive.em_pasta_sincronizada(pasta)
+        return bool(sim), u"%s" % (motivo or u"")
+    except Exception as e:
+        # GUARDA: sem como conferir, a chave fica so na memoria (falha fechado).
+        return True, u"sem como conferir a pasta (%s)" % type(e).__name__
+
+
+AVISO_DO_SEGREDO = (u"A pasta do registro de casos sincroniza com a nuvem: a "
+                    u"chave do pseudônimo não é gravada nela e vale só enquanto "
+                    u"o programa está aberto. Aponte RADAI_REGISTRO_DIR para "
+                    u"uma pasta fora da nuvem.")
+
+
+def aviso_do_segredo(base=""):
+    sim, _motivo = _pasta_que_sincroniza(raiz(base))
+    return AVISO_DO_SEGREDO if sim else u""
+
+
 def _segredo(base=""):
-    p = os.path.join(_garantir(raiz(base)), NOME_SEGREDO)
+    pasta = _garantir(raiz(base))
+    p = os.path.join(pasta, NOME_SEGREDO)
     try:
         if os.path.isfile(p):
             with io.open(p, "rb") as f:
@@ -42,6 +67,13 @@ def _segredo(base=""):
                 return s
     except Exception:
         pass
+    # GUARDA: chave em texto nunca vai para pasta que sincroniza com a nuvem.
+    if _pasta_que_sincroniza(pasta)[0]:
+        chave = os.path.normcase(os.path.abspath(pasta))
+        if chave not in _SEGREDO_NA_MEMORIA:
+            _SEGREDO_NA_MEMORIA[chave] = hashlib.sha256(
+                os.urandom(64)).hexdigest().encode("ascii")
+        return _SEGREDO_NA_MEMORIA[chave]
     s = hashlib.sha256(os.urandom(64)).hexdigest().encode("ascii")
     try:
         with io.open(p, "wb") as f:
@@ -331,7 +363,6 @@ def perfil_da_estacao(papel="", base=""):
     p["internet"] = _tem_internet()
     p["gpu"] = _gpu()
     p["memoria"] = None
-    p["servicos"] = None
     try:
         import radai_cleaner as LP
         m = LP.memoria_da_estacao() or {}
@@ -339,18 +370,8 @@ def perfil_da_estacao(papel="", base=""):
             p["memoria"] = {"total_gb": round(m["total_mb"] / 1024.0, 1),
                             "livre_gb": round(m.get("livre_mb", 0) / 1024.0, 1),
                             "pct_em_uso": m.get("pct")}
-        p["servicos"] = [{"nome": s["nome"], "estado": s["estado"]}
-                         for s in (LP.estado_dos_servicos() or [])]
     except Exception:
         pass
-    try:
-        import radai_overnight as OV
-        e = OV.estado()
-        p["overnight"] = {"ativo": bool(e.get("ativo")),
-                          "pausados": list(e.get("pausados") or []),
-                          "horas": round(float(e.get("horas") or 0), 1)}
-    except Exception:
-        p["overnight"] = None
     return p
 
 
@@ -1166,15 +1187,6 @@ def narrativa(d):
                                           None: u"não deu para saber"}.get(e.get("admin")))
     L.append(u"| internet | %s |" % (u"sim" if e.get("internet") else u"não"))
     L.append(u"| Windows | %s |" % (e.get("windows") or {}).get("versao"))
-    srv = e.get("servicos") or []
-    if srv:
-        rodando = [x["nome"] for x in srv if x.get("estado") == "rodando"]
-        L.append(u"| serviços da lista rodando | %s |"
-                 % (u", ".join(rodando) if rodando else u"nenhum"))
-    ov = e.get("overnight") or {}
-    if ov.get("ativo"):
-        L.append(u"| overnight run | aberto há %s h, %d serviço(s) pausado(s) |"
-                 % (ov.get("horas"), len(ov.get("pausados") or [])))
     L.append(u"")
     ver = d.get("versoes") or {}
     if ver:

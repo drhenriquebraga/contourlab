@@ -371,7 +371,12 @@ def uniao_por_nome(masks, prefixos, cru=None, exato=False, ambas=False):
                     continue
                 achou = True
                 b = _bool(fonte[nome])
-                fora = b.copy() if fora is None else (fora | b)
+                if fora is None:
+                    fora = b.copy()
+                elif fora.shape == b.shape:
+                    fora |= b
+                else:
+                    fora = fora | b
     return fora
 
 
