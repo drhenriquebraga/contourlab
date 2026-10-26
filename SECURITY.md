@@ -18,7 +18,7 @@ synthetic phantoms the batteries build.
 
 The code in this repository: the engine, the folder watcher, *Run now* and
 *View segmentation*. The installer, the updater and the shell shared by the
-six apps live in the [Local Suite](https://github.com/radioterapia-ai/local-suite)
+six apps live in the [Local Suite](https://github.com/drhenriquebraga/local-suite)
 repository; a finding there can be reported here or there. The findings that
 matter most:
 

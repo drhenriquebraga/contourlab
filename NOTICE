@@ -4,7 +4,7 @@ Copyright 2026 Henrique Braga
 Licenciado sob a Apache License, Version 2.0. Ver o arquivo LICENSE.
 
 Componente da Radioterapia.AI Local Suite
-(https://github.com/radioterapia-ai/local-suite). O NOTICE da Suite cobre o
+(https://github.com/drhenriquebraga/local-suite). O NOTICE da Suite cobre o
 pacote inteiro que a estacao instala -- o Python, as bibliotecas fixadas e
 a porta; este cobre os modelos que este componente executa, as
 bibliotecas que o codigo dele importa e o conteudo de terceiro que viaja
@@ -407,7 +407,7 @@ APROVADA (`ApprovalStatus = UNAPPROVED`), com sufixo de procedencia no nome:
 O CODIGO PUBLICADO e material educacional. NAO e dispositivo medico e nao foi
 validado para uso clinico. Quem baixa, modifica e implanta responde pelo
 proprio build -- e o build e o da Suite (build/ do repositorio
-radioterapia-ai/local-suite), que monta o instalador a partir dos
+drhenriquebraga/local-suite), que monta o instalador a partir dos
 repositorios de cada componente.
 
 Revisao e aprovacao continuam sendo ato medico, dentro do sistema de

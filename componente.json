@@ -3,7 +3,7 @@
   "nome": "CONTOURLAB",
   "rotulo": "ContourLab",
   "modulo_da_porta": "autocontorno",
-  "repositorio": "radioterapia-ai/contourlab",
+  "repositorio": "drhenriquebraga/contourlab",
   "app": [
     "engine.py",
     "radai_arranque.py",

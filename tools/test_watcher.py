@@ -3442,7 +3442,7 @@ def _checar_bloco_sem_nome_e_com_rede(RA, texto, bl, ctx):
     checar(u"o bloco DECLARA a rede por omissão",
            "Rede por omissao (o que a estacao faz sozinha" in bl, bl[:200])
     checar(u"  a consulta de versão: destino da API, quando, e o que leva",
-           "consulta de versao: GET https://api.github.com/repos/radioterapia-ai/"
+           "consulta de versao: GET https://api.github.com/repos/drhenriquebraga/"
            "local-suite/releases/latest | quando: uma vez, no arranque" in bl
            and "so o User-Agent 'radioterapia-ai-local-suite' - sem corpo" in bl,
            [l for l in bl.splitlines() if "consulta de versao" in l][:1])
