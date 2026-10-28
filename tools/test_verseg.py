@@ -220,7 +220,10 @@ _RODA = u"""
 function espera(ms){ return new Promise(function(r){ setTimeout(r, ms); }); }
 (async function(){
  var R = {};
- cpAbrirSerie({b: 'B', uid: 'U', cortes: 20, rs: [{arquivo: 'RS_RadAI_FULL_1.dcm', cod: 'full'}]});
+ cpAbrirSerie({b: 'B', uid: 'U', cortes: 20, nome: 'FANTOMA <TESTE>',
+  pid: 'SINTETICO', modalidade: 'MR', date: '20261028', desc: 'SERIE TESTE',
+  espessura_mm: 2, rs: [{arquivo: 'RS_RadAI_FULL_1.dcm', cod: 'full'}]});
+ R.cabecalho = ELS['cp_qual'] ? ELS['cp_qual'].innerHTML : '';
  R.zoom = CP.zoom;
  R.ligouNoAbrir = CHAMADAS.filter(function(c){ return c.lig === true; }).map(function(c){ return c.id; });
  await espera(60);
@@ -274,6 +277,14 @@ def falhas_do_comparador(d):
     f = []
     if not d:
         return [u"não executou"]
+    cabecalho = d.get(u"cabecalho") or u""
+    if not all(v in cabecalho for v in (
+            u"Paciente", u"FANTOMA &lt;TESTE&gt;", u"ID", u"SINTETICO",
+            u"Modalidade", u"MR", u"Data do exame", u"28/10/2026",
+            u"SERIE TESTE", u"Cortes", u"Espessura")):
+        f.append(u"o cabecalho nao mostra todos os metadados selecionados")
+    if u"FANTOMA <TESTE>" in cabecalho:
+        f.append(u"o nome da serie entrou como HTML sem escape")
     if abs(float(d.get(u"zoom") or 0) - 1.25) > 1e-9:
         f.append(u"o zoom inicial é %s, e não 125%%" % d.get(u"zoom"))
     if sorted(d.get(u"ligouNoAbrir") or []) != [u"cp_visor0", u"cp_visor1"]:
@@ -1113,6 +1124,55 @@ def teste_a_rm_abre_no_visor():
         shutil.rmtree(base, ignore_errors=True)
 
 
+def teste_o_visor_nao_abre_serie_parcial():
+    secao(u"a lista progressiva nao abre parcial nem apaga o visor atual")
+    import radai_view
+    node = U._node()
+    if not node:
+        checar(u"node disponivel", False, u"PULADO")
+        return
+    funcoes = u"\n".join(u"function %s(%s){%s}\n" % (
+        nome, args, U._corpo_js(radai_view.JS, nome)) for nome, args in (
+            (u"vrSerieDisponivel", u"s"), (u"vrPintar", u""),
+            (u"vrAbrirSerie", u"lista,i")))
+    base = u"""
+var ELS = {}, VR = {series:[], escolhida:-1}, VR_CONJ = [];
+var CP = {serie:{b:'ANTERIOR'}}, ABRIU = 0, FECHOU = 0, PEDIU = 0;
+var window = {};
+function vrEl(id){ return ELS[id] || (ELS[id] = {innerHTML:'',className:''}); }
+function esc(x){ return String(x == null ? '' : x); }
+function vrDataBr(x){ return x || ''; }
+function vrPopup(){ return {fechar:function(){ FECHOU++; }}; }
+function vrCarregandoVisor(){}
+function cpAbrirSerie(s){ CP.serie = s; ABRIU++; PEDIU++; }
+"""
+    roda = u"""
+VR.series = [{uid:'SINTETICO', cortes:2, carregando:true, bilhete:null}];
+vrPintar();
+var R = {parcialDesabilitada:ELS.vr_tab.innerHTML.indexOf(' disabled') >= 0,
+ lendo:ELS.vr_tab.innerHTML.indexOf('Lendo os cortes da série…') >= 0};
+vrAbrirSerie(VR.series, 0);
+R.preservou = CP.serie.b === 'ANTERIOR' && !ABRIU && !FECHOU && !PEDIU;
+VR.series = [{uid:'SINTETICO', cortes:20, carregando:false, b:'COMPLETA',rs:[]}];
+vrPintar();
+R.habilitou = ELS.vr_tab.innerHTML.indexOf(' disabled') < 0;
+vrAbrirSerie(VR.series, 0);
+R.abriuCompleta = CP.serie.b === 'COMPLETA' && ABRIU === 1 && PEDIU === 1;
+console.log('JSON:' + JSON.stringify(R));
+"""
+    d, erro = U._rodar_node(base + funcoes + roda, node)
+    checar(u"a parcial fica desabilitada com estado traduzivel de leitura",
+           d and d.get("parcialDesabilitada") and d.get("lendo"), erro)
+    checar(u"abrir parcial por chamada direta preserva serie e nao pede b vazio",
+           d and d.get("preservou"), erro)
+    checar(u"a mesma linha finalizada habilita e abre com bilhete completo",
+           d and d.get("habilitou") and d.get("abriuCompleta"), erro)
+    isca = funcoes.replace(u"if(!vrSerieDisponivel(s)) return;", u"")
+    ruim, _e = U._rodar_node(base + isca + roda, node)
+    checar(u"ISCA: sem a guarda, abrir parcial apaga o visor e pede imagem",
+           isca != funcoes and ruim and not ruim.get("preservou"))
+
+
 def main():
     print(u"=" * 68)
     print(u"test_verseg | o «Ver segmentação» da v8.4")
@@ -1125,7 +1185,7 @@ def main():
               teste_os_conjuntos_ao_lado_abrem,
               teste_o_carregamento_religado_nao_some,
               teste_as_mascaras_da_serie,
-              teste_a_rm_abre_no_visor]
+              teste_a_rm_abre_no_visor, teste_o_visor_nao_abre_serie_parcial]
     import traceback
     for t in testes:
         try:

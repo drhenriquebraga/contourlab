@@ -616,8 +616,8 @@ def teste_build_rtstruct():
         checar("StructureSetLabel cabe em SH (16)", len(str(ds.StructureSetLabel)) <= 16)
         checar("descricao diz NAO APROVADA",
                "NAO APROVADA" in str(getattr(ds, "StructureSetDescription", "")).upper())
-        checar("SeriesDescription avisa no import",
-               "NAO APROVADA" in str(getattr(ds, "SeriesDescription", "")).upper(),
+        checar("SeriesDescription usa o nome neutro do STUDY",
+               str(getattr(ds, "SeriesDescription", "")) == "RadAI STUDY",
                str(getattr(ds, "SeriesDescription", "")))
 
         rois = [str(r.ROIName) for r in ds.StructureSetROISequence]

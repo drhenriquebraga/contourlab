@@ -192,7 +192,7 @@ def teste_o_oar_e_uma_selecao_exata_do_full():
                u"herda do FULL gravado)", _recusou)
         checar(u"  e serie 900, a do entregue", int(oar.SeriesNumber) == 900)
         checar(u"  e o nome e a descricao do entregue, com a versao DELE",
-               str(oar.StructureSetName).startswith("RadAI auto-contorno")
+               str(oar.StructureSetName) == "RadAI STUDY"
                and "RadAI_STUDY" in str(oar.StructureSetDescription)
                and "material de revisao" not in str(oar.StructureSetDescription),
                str(oar.StructureSetDescription)[:160])
@@ -306,10 +306,10 @@ def teste_o_full_faz_o_pos_processamento():
                u"%d voxels de diferenca" % int((lung_l ^ lobos).sum()))
         heart = mf["heart"]
         gv = mf["great_veins"]
-        checar(u"os grandes vasos sao a soma dos vasos prontos MENOS o "
-               u"Heart_ai", np.array_equal(
+        checar(u"as grandes veias sao a soma dos vasos prontos, inclusive "
+               u"dentro do Heart_ai", np.array_equal(
                    gv, (mf["superior_vena_cava"] | mf["inferior_vena_cava"]
-                        | mf["brachiocephalic_vein_left"]) & ~heart),
+                        | mf["brachiocephalic_vein_left"])),
                u"%d voxels em comum com o coracao" % int((heart & gv).sum()))
         ga = mf["great_arteries"]
         checar(u"  e a aorta DESCENDENTE fica dentro dos grandes vasos (B3)",
@@ -333,19 +333,19 @@ def teste_as_iscas_da_cadeia():
     velho_rec = E.recompor_compostos
     try:
         serie = _serie(base)
-        E.COMPOSTOS_MENOS.clear()
+        E.COMPOSTOS_MENOS["great_veins"] = ("heart",)
         try:
             sd, r, linhas, dest = _rodar(base, serie)
         finally:
             E.COMPOSTOS_MENOS.update(menos)
         mf = sd.meta_do_full["mascaras"]
-        comum = int((np.asarray(mf["great_veins"], bool)
-                     & np.asarray(mf["heart"], bool)).sum())
-        checar(u"(isca) sem `COMPOSTOS_MENOS`, os vasos e o coracao se "
-               u"sobrepoem -- e a conferencia do OAR acusa",
-               comum > 0 and any(l.startswith("OAR: SOBREPOSICAO")
-                                 for l in linhas),
-               u"%d voxels em comum" % comum)
+        soma = (np.asarray(mf["superior_vena_cava"], bool)
+                | np.asarray(mf["inferior_vena_cava"], bool)
+                | np.asarray(mf["brachiocephalic_vein_left"], bool))
+        perdidos = int((soma & ~np.asarray(mf["great_veins"], bool)).sum())
+        checar(u"(isca) a regra antiga retiraria parte das grandes veias "
+               u"que deve sobrepor o Heart_ai", perdidos > 0,
+               u"%d voxels perdidos" % perdidos)
 
         def _so_uma_vez(masks, log=None, criar=False, **k):
             if criar:
@@ -396,8 +396,8 @@ def teste_margem_em_cada_vaso_e_composto_como_soma():
     gv = np.asarray(fora["great_veins"], bool)
     soma = (np.asarray(fora["superior_vena_cava"], bool)
             | np.asarray(fora["iliac_vena_left"], bool))
-    checar(u"great_veins = soma dos vasos prontos MENOS o coracao",
-           np.array_equal(gv, soma & ~np.asarray(fora["heart"], bool)))
+    checar(u"great_veins = soma inteira dos vasos prontos",
+           np.array_equal(gv, soma))
     checar(u"a entrada nao foi mutada (a camada e do FULL)",
            int(m["iliac_vena_left"].sum()) == 4 * 4 * 4)
 
@@ -1155,10 +1155,9 @@ def teste_a_margem_vem_antes_do_coracao():
     g, m = _fantoma_da_casca()
     lumen = m["superior_vena_cava"].copy()
     fora, meta = E.preparar_full(dict(m), grade=g)
-    k = _casca(fora, lumen)
-    checar(u"sem casca: `great_veins` = soma dos prontos − Heart_ai, e o "
-           u"Heart_ai leva a parede da VCS que absorve",
-           "great_veins" in fora and not k.any(), u"%d voxels" % int(k.sum()))
+    checar(u"a grande veia conserva a parede, inclusive no Heart_ai",
+           "great_veins" in fora and np.array_equal(
+               fora["great_veins"], fora["superior_vena_cava"]))
     velha = E.ORDEM_DO_FULL
     try:
         _sem = [p for p in velha if p[0] != "margens"]
@@ -1168,9 +1167,8 @@ def teste_a_margem_vem_antes_do_coracao():
         f2, _m2 = E.preparar_full(dict(m), grade=g)
     finally:
         E.ORDEM_DO_FULL = velha
-    k2 = _casca(f2, lumen)
-    checar(u"ISCA: com o coracao antes da margem sobra casca (reprovaria)",
-           k2.any(), u"%d voxels" % int(k2.sum()))
+    checar(u"ISCA: o coracao antes da margem difere do que usa os vasos "
+           u"prontos", not np.array_equal(fora["heart"], f2["heart"]))
 
 
 def teste_a_construcao_recebe_uma_camada():
@@ -4495,10 +4493,10 @@ def teste_o_ivb_sem_a_clavicula_antes_da_uniao():
                bool(np.asarray(mf["Lvl_IVb_L"], bool).any())
                and not (ivb_l & ~cl & ~np.asarray(mf["Lvl_IVb_L"],
                                                    bool)).any())
-        checar(u"so o IVb: o Lvl_V continua com a clavicula, e a uniao tambem "
-               u"(o recorte foi antes da uniao, so no IVb)",
+        checar(u"o Lvl_V original continua com a clavicula, mas a uniao "
+               u"final retira toda a interseccao com ela",
                bool((np.asarray(mf["Lvl_V_L"], bool) & cl).any())
-               and bool((un & v_l & cl).any()))
+               and not (un & v_l & cl).any())
         checar(u"o log diz quanto saiu de cada lado",
                any(u"clavicula" in l and u"Lvl_IVb_L" in l for l in linhas)
                and any(u"clavicula" in l and u"Lvl_IVb_R" in l
@@ -4511,8 +4509,11 @@ def teste_o_ivb_sem_a_clavicula_antes_da_uniao():
         finally:
             HN.CLAVICULA_DO_IVB = velho
         isca = _sem(mfi, np.asarray(mfi[HN.NOME_DA_UNIAO], bool))
-        checar(u"ISCA: sem o recorte, o IVb e a uniao levam a clavicula (as "
-               u"checagens de cima reprovariam)", not any(isca.values()),
+        checar(u"ISCA: sem o recorte do IVb, ele leva a clavicula, mas a "
+               u"uniao continua protegida pelo acabamento final",
+               not isca[u"o Lvl_IVb_L sem a clavicula esquerda"]
+               and not isca[u"o Lvl_IVb_R sem a clavicula direita"]
+               and isca[u"a uniao sem a clavicula que o IVb tinha"],
                str(isca))
         niv_m, _a, _b, _c = _cervicais_com_clavicula()
         niv_m.extensao = {"ok": False, "desce_mm": 45.0,
@@ -5339,9 +5340,9 @@ def teste_o_fast_grava_so_o_oar_fast():
         _cruz = dict((c, int((_h & np.asarray(mf[c], bool)).sum()))
                      for c in ("great_arteries", "great_veins")
                      if _h is not None and c in mf)
-        checar(u"  e os grandes vasos inteiros nao invadem o Heart_ai "
-               u"suavizado (o composto perde o que o coracao ocupa)",
-               _h is not None and _cruz and not any(_cruz.values()),
+        checar(u"  as grandes arterias perdem o Heart_ai; as veias podem "
+               u"sobrepor o coracao tambem no FAST",
+               _h is not None and _cruz and _cruz.get("great_arteries") == 0,
                str(_cruz))
         checar(u"o log diz os pontos que sairam e o filtro",
                any(u"decimacao (Douglas-Peucker" in l for l in linhas)
@@ -6277,10 +6278,12 @@ def teste_a_gravacao_nao_guarda_duas_copias():
 
 
 def teste_as_carotidas_ficam_so_no_full():
-    secao(u"v8.5: as carotidas saem do composto dos grandes vasos (o do OAR) "
-          u"e ficam no FULL")
-    checar(u"o composto dos grandes vasos nao leva carotida nenhuma",
-           not [p for p in E.COMPOSTOS["great_arteries"] if "carotid" in p],
+    secao(u"as carotidas entram nas grandes arterias e continuam "
+          u"separadas no FULL")
+    checar(u"o composto dos grandes vasos leva as carotidas bilaterais",
+           all(p in E.COMPOSTOS["great_arteries"] for p in (
+               "common_carotid_artery_left", "common_carotid_artery_right",
+               "internal_carotid_artery_left", "internal_carotid_artery_right")),
            str(E.COMPOSTOS["great_arteries"]))
     base = tempfile.mkdtemp(prefix="radai_t_fulloar_")
     velho_ga = list(E.COMPOSTOS["great_arteries"])
@@ -6306,9 +6309,9 @@ def teste_as_carotidas_ficam_so_no_full():
         serie = _serie(base)
         sd, r, linhas, dest = _rodar(base, serie, cruas=_cruas_com_carotidas())
         ga, ci, cc = _medir(sd)
-        checar(u"o GreatArteries_ai (o mesmo no FULL e no OAR) nao tem voxel "
-               u"das carotidas", ga.any() and ci.any() and cc.any()
-               and not (ga & (ci | cc)).any(),
+        checar(u"o GreatArteries_ai (o mesmo no FULL e no OAR) inclui "
+               u"as carotidas", ga.any() and ci.any() and cc.any()
+               and not ((ci | cc) & ~ga).any(),
                u"interna %d vx, comum %d vx, em comum %d vx"
                % (int(ci.sum()), int(cc.sum()), int((ga & (ci | cc)).sum())))
         full = set(r["estruturas_full"])
@@ -6321,17 +6324,16 @@ def teste_as_carotidas_ficam_so_no_full():
                not [n for n in r["estruturas"] if "arotid" in n]
                and "GreatArteries_ai" in r["estruturas"],
                str(sorted(r["estruturas"])))
-        E.COMPOSTOS["great_arteries"] = velho_ga + [
-            "internal_carotid_artery_left", "internal_carotid_artery_right"]
+        E.COMPOSTOS["great_arteries"] = [
+            p for p in velho_ga if "carotid" not in p]
         try:
             sd_i, _r, _l, _d = _rodar(base, serie,
                                       cruas=_cruas_com_carotidas())
         finally:
             E.COMPOSTOS["great_arteries"] = velho_ga
         ga_i, ci_i, _cc = _medir(sd_i)
-        checar(u"ISCA: com a carotida interna de volta no composto, ela "
-               u"entra no GreatArteries_ai do OAR (o defeito)",
-               (ga_i & ci_i).any())
+        checar(u"ISCA: sem a carotida interna no composto, ela desaparece "
+               u"do GreatArteries_ai do STUDY", not (ga_i & ci_i).any())
     finally:
         E.COMPOSTOS["great_arteries"] = velho_ga
         shutil.rmtree(base, ignore_errors=True)
@@ -6593,6 +6595,81 @@ def teste_os_constritores_finos_nao_somem():
         shutil.rmtree(base, ignore_errors=True)
 
 
+def teste_as_cores_proprias_chegam_ao_study():
+    secao(u"cor propria gravada no STUDY e cor padrao preservada no FULL")
+    import radai_config as cfg
+    base = tempfile.mkdtemp(prefix="radai_t_fulloar_")
+    velho = cfg.ler_nomes
+    try:
+        cfg.ler_nomes = lambda *a, **k: {
+            "modo": "proprios", "nomes": {}, "cores": {"Heart_ai": [7, 83, 191]}}
+        serie = _serie(base)
+        _sd, r, _l, _d = _rodar(base, serie)
+        def cor(caminho, nome):
+            ds = pydicom.dcmread(caminho)
+            numero = next(int(roi.ROINumber) for roi in ds.StructureSetROISequence
+                          if str(roi.ROIName) == nome)
+            return next(tuple(int(v) for v in roi.ROIDisplayColor)
+                        for roi in ds.ROIContourSequence
+                        if int(roi.ReferencedROINumber) == numero)
+        checar(u"mudar somente a cor, sem renomear, grava o RGB escolhido",
+               cor(r["oar"], "Heart_ai") == (7, 83, 191))
+        checar(u"o FULL conserva o RGB padrao da mesma estrutura",
+               cor(r["full"], "Heart_ai") == tuple(E._color("heart")))
+        cfg.ler_nomes = lambda *a, **k: {
+            "modo": "padrao", "nomes": {}, "cores": {"Heart_ai": [7, 83, 191]}}
+        _sd2, r2, _l2, _d2 = _rodar(base, serie)
+        checar(u"modo padrao ignora o RGB proprio armazenado",
+               cor(r2["oar"], "Heart_ai") == tuple(E._color("heart")))
+    finally:
+        cfg.ler_nomes = velho
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def teste_os_nomes_neutros_de_apresentacao():
+    secao(u"nomes neutros de apresentacao sem mudar a fronteira clinica")
+    base = tempfile.mkdtemp(prefix="radai_t_fulloar_")
+    try:
+        serie = _serie(base)
+        _sd, saidas, _l, _d = _rodar(base, serie)
+        _sf, rapido, _lf, _df = _rodar(base, serie, modo="fast")
+        for cod, caminho, nome, rotulo, numero in (
+                ("STUDY", saidas["oar"], "RadAI STUDY", "RadAI_STUDY", 900),
+                ("FULL", saidas["full"], "RadAI FULL", "RadAI_FULL", 901),
+                ("FAST", rapido["oar_fast"], "RadAI STUDY Fast",
+                 "RadAI_STUDY_Fast", 900)):
+            ds = pydicom.dcmread(caminho)
+            checar(u"%s: SeriesDescription e StructureSetName neutros" % cod,
+                   str(ds.SeriesDescription) == nome
+                   and str(ds.StructureSetName) == nome)
+            checar(u"%s: rotulo e numero da serie preservados" % cod,
+                   str(ds.StructureSetLabel) == rotulo
+                   and int(ds.SeriesNumber) == numero)
+            checar(u"%s: continua UNAPPROVED com a fronteira na descricao" % cod,
+                   str(ds.ApprovalStatus) == "UNAPPROVED"
+                   and "SUGESTAO NAO APROVADA" in str(ds.StructureSetDescription))
+            checar(u"%s: ROIs automaticas preservam sufixo e proveniencia" % cod,
+                   all(str(r.ROIName).endswith("_ai")
+                       and str(r.ROIGenerationAlgorithm) == "AUTOMATIC"
+                       for r in ds.StructureSetROISequence)
+                   and all(getattr(r, "ROIGenerationDescription", "")
+                           for r in ds.StructureSetROISequence))
+            if cod != "FULL":
+                checar(u"%s: a descricao da ROI guarda nome padrao e nao aprovacao" % cod,
+                       all("sugestao IA nao aprovada" in str(getattr(r, "ROIDescription", ""))
+                           for r in ds.StructureSetROISequence))
+        for rotulo in ("RadAI_NV", "RadAI_MSE", "RadAI_HNL"):
+            textos = E._textos_do_conjunto(rotulo, "teste", False, "_ai", [], 0, 0)
+            checar(u"comparativo %s conserva seus textos anteriores" % rotulo,
+                   textos["StructureSetName"] == rotulo + " - nao e o entregue"
+                   and textos["SeriesDescription"].startswith(rotulo + " - nao e o entregue"))
+        checar(u"os arquivos da Suite continuam com o prefixo RS_RadAI",
+               all(os.path.basename(c).startswith("RS_RadAI_")
+                   for c in (saidas["oar"], saidas["full"], rapido["oar_fast"])))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def main():
     print(u"test_full_oar | a cadeia do entregue (FULL -> OAR), spec A1-A7")
     testes = (teste_o_oar_e_uma_selecao_exata_do_full,
@@ -6679,7 +6756,9 @@ def main():
               teste_o_reto_pelo_plato_do_sacro,
               teste_os_orgaos_do_motor_do_cranio_chegam_ao_oar,
               teste_o_entregue_nao_tem_contorno_degenerado_nem_cruzado,
-              teste_os_constritores_finos_nao_somem)
+              teste_os_constritores_finos_nao_somem,
+              teste_as_cores_proprias_chegam_ao_study,
+              teste_os_nomes_neutros_de_apresentacao)
     _conferir_registro(testes)
     for t in testes:
         try:

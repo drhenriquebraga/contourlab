@@ -44,6 +44,15 @@ CLAVICULA_DO_IVB = {"Lvl_IVb_L": "clavicula_left",
 LADO_DA_CLAVICULA = {"clavicula_left": u"esquerda",
                      "clavicula_right": u"direita"}
 
+FORA_DA_UNIAO = (
+    "sternocleidomastoid_left", "sternocleidomastoid_right",
+    "platysma_left", "platysma_right", "mandible",
+    "anterior_scalene_left", "anterior_scalene_right",
+    "middle_scalene_left", "middle_scalene_right",
+    "posterior_scalene_left", "posterior_scalene_right",
+    "clavicula_left", "clavicula_right", "hyoid",
+)
+
 
 def _clavicula_final(masks, chave, forma):
     import numpy as np
@@ -69,7 +78,7 @@ def acabamento_do_ivb(nome, m, masks, grade, log=None):
     return m & ~clav, None, {"clavicula_tirada_cm3": round(cm3, 2)}
 
 
-def acabamento_da_uniao_sem_a_clavicula(ivb_crus):
+def acabamento_da_uniao_sem_a_clavicula(ivb_crus, descricao_original=None):
     def _acabamento(nome, m, masks, grade, log=None):
         import numpy as np
         m = np.asarray(m, dtype=bool)
@@ -87,16 +96,34 @@ def acabamento_da_uniao_sem_a_clavicula(ivb_crus):
                 sai = s if sai is None else (sai | s)
                 partes.append((n_ivb, LADO_DA_CLAVICULA[chave],
                                int(s.sum())))
+        import radai_names
+        descricao = ((descricao_original or descricao_da_uniao(
+            nome == NOME_DA_UNIAO))
+                     + u" Sem as interseccoes com esternocleidomastoideos, "
+                     u"platismas, mandibula, escalenos anteriores, medios e "
+                     u"posteriores, claviculas e hioide das mascaras finais.")
+        fora = []
+        for chave in sorted(masks or {}):
+            if radai_names.casa_prefixo(chave, FORA_DA_UNIAO) is None:
+                continue
+            b = np.asarray(masks[chave], dtype=bool)
+            if b.shape != m.shape:
+                continue
+            inter = m & b
+            if inter.any():
+                sai = inter.copy() if sai is None else (sai | inter)
+                fora.append(str(chave))
         if sai is None:
-            return None, None, {}
+            return None, descricao, {}
         vx = float(np.prod(grade.spacing)) / 1000.0
-        _dizer(log, u"   `%s`: sem a clavicula que o Lvl_IVb do mesmo lado "
-                    u"tinha, recortada antes da uniao (%s)"
-               % (nome, u"; ".join(u"%s: -%.2f cm3 da clavicula %s"
-                                   % (n, k * vx, lado)
-                                   for n, lado, k in partes)))
-        return m & ~sai, None, {"clavicula_tirada_cm3":
-                                round(int(sai.sum()) * vx, 2)}
+        tirados = round(int(sai.sum()) * vx, 2)
+        _dizer(log, u"   `%s`: sem a interseccao com musculos e ossos "
+                    u"adjacentes nas mascaras finais (-%.2f cm3; %s)"
+               % (nome, tirados, u", ".join(fora)))
+        return m & ~sai, descricao, {"vizinhos_tirados_cm3": tirados,
+                                "vizinhos": fora,
+                                "clavicula_tirada_cm3": round(
+                                    sum(k for _n, _lado, k in partes) * vx, 2)}
     return _acabamento
 
 

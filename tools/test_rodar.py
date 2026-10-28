@@ -316,8 +316,8 @@ def teste_a_folha_do_turno():
     checar(u"R19: o «Iniciar sem salvar» saiu da folha",
            u"ov_bt_sem" not in js and u"Iniciar sem salvar" not in js
            and u"_ovTemporarios" not in js)
-    checar(u"  e a folha só tem «Cancelar» e «Salvar e iniciar»",
-           u"ok: 'Salvar e iniciar'" in js and u"cancelar: 'Cancelar'" in js)
+    checar(u"  e a folha só tem «Cancelar» e «Salvar e incluir na fila»",
+           u"ok: 'Salvar e incluir na fila'" in js and u"cancelar: 'Cancelar'" in js)
 
 
 def teste_o_personalizado():
@@ -897,10 +897,14 @@ async def _navegar(exe, root, prints):
             await pg.evaluate("folhaOvernight()")
             await pg.wait_for_selector(".ui-pnl .ov-form", timeout=10000)
             await pg.wait_for_timeout(900)
+            await pg.click(".ui-pnl #ov_root_add")
+            checar(u"[tela] o mais adiciona outra pasta ao Overnight",
+                   await pg.locator(".ui-pnl [data-ov-root]").count() == 2)
+            await pg.locator(".ui-pnl #ov_roots .ov-root").last.locator("button").last.click()
             bts = await pg.evaluate("""() => [...document.querySelectorAll('.ui-pnl button')]
                .filter(b => b.offsetParent && !b.closest('.ov-form')).map(b => b.textContent.trim())""")
-            checar(u"[tela] R19: a folha só tem «Cancelar» e «Salvar e iniciar»",
-                   sorted(bts) == sorted([u"Cancelar", u"Salvar e iniciar"])
+            checar(u"[tela] R19: a folha só tem «Cancelar» e «Salvar e incluir na fila»",
+                   sorted(bts) == sorted([u"Cancelar", u"Salvar e incluir na fila"])
                    and not await pg.evaluate("!!document.getElementById('ov_bt_sem')"),
                    u" | ".join(bts))
             bal = await pg.evaluate("""() => { const b = document.querySelector('.ui-pnl #ov_frota_aviso');

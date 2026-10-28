@@ -127,7 +127,8 @@ def series_contornadas(pasta, sem_contorno=False):
             continue
         out.append({
             "uid": s.get("uid"), "pasta": real, "curto": (s.get("uid") or "")[-12:],
-            "pid": s.get("pid", ""), "date": s.get("date", ""),
+            "pid": s.get("pid", ""), "nome": s.get("nome", ""),
+            "date": s.get("date", ""),
             "desc": s.get("desc", ""), "cortes": s.get("cortes", 0),
             "espessura_mm": s.get("espessura_mm"), "kernel": s.get("kernel", ""),
             "modalidade": s.get("modalidade") or "CT",
@@ -997,8 +998,21 @@ function cpCarregando(ligado, texto){
   if(v) w.uiCarregando(v, ligado ? true : false, texto || '');
  }
 }
+function cpResumoDaSerie(s){
+ var data = String(s.date || '');
+ if(/^\\d{8}$/.test(data)) data = data.slice(6,8) + '/' + data.slice(4,6) + '/' + data.slice(0,4);
+ var campos = [['Paciente', s.nome || '—'], ['ID', s.pid || '—'],
+  ['Modalidade', s.modalidade || '—'], ['Data do exame', data || '—'],
+  ['Cortes', s.cortes || 0]];
+ if(s.espessura_mm != null) campos.push(['Espessura', s.espessura_mm + ' mm']);
+ return ['<span translate="no">' + cpEsc(s.desc || '—') + '</span>'].concat(
+  campos.map(function(c){ return '<span data-radai-frase>' + cpEsc(c[0]) + '</span> '
+   + '<span translate="no">' + cpEsc(c[1]) + '</span>'; })).join(' · ');
+}
 function cpAbrirSerie(s){
  if(!s) return;
+ cpHTML(cpEl('cp_qual'), cpResumoDaSerie(s));
+ cpRetraduzir();
  CP.serie = s; CP.cacheCont = {}; CP.ordemCache = []; CP.ultimo = null;
  CP.zoom = CP_ZOOM_INICIAL; CP.px = 0; CP.py = 0; CP.corte = 0;
  var p = cpPadroes(s.rs || []);

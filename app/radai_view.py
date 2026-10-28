@@ -278,6 +278,7 @@ function vrFimDaBusca(linhas, p){
 }
 
 var VR_CONJ = @CONJUNTOS@;
+function vrSerieDisponivel(s){ return !!(s && !s.carregando && s.b); }
 
 function vrPintar(){
  var h = '<thead><tr><th>ID</th><th>Data do exame</th>'
@@ -285,6 +286,7 @@ function vrPintar(){
        + '<th class="num">Espessura</th><th>Série</th><th>Conjuntos entregues</th>'
        + '<th class="vr-acao"></th></tr></thead><tbody>';
  VR.series.forEach(function(s, i){
+  var disponivel = vrSerieDisponivel(s);
   var tem = {};
   (s.rs || []).forEach(function(r){ tem[vrCodDe(r.arquivo)] = true });
   var chips = VR_CONJ.filter(function(c){
@@ -300,7 +302,9 @@ function vrPintar(){
      + '<td class="num">' + (s.espessura_mm == null ? '—' : esc(s.espessura_mm + ' mm')) + '</td>'
      + '<td class="sub" style="font-family:var(--mono,monospace)">…' + esc(s.curto || '') + '</td>'
      + '<td><div class="vr-conj">' + chips + '</div></td>'
-     + '<td class="vr-acao"><button type="button" class="ui-bt mini" data-abrir="' + i + '">Abrir</button></td></tr>';
+     + '<td class="vr-acao"><button type="button" class="ui-bt mini" data-abrir="' + i + '"'
+     + (disponivel ? '' : ' disabled') + '><span data-radai-frase>'
+     + (disponivel ? 'Abrir' : 'Lendo os cortes da série…') + '</span></button></td></tr>';
  });
  vrEl('vr_tab').innerHTML = h + '</tbody>';
  vrEl('vr_lista').className = 'vr-lista';
@@ -322,6 +326,7 @@ document.addEventListener('click', function(ev){
  var b = ev.target.closest ? ev.target.closest('[data-abrir]') : null;
  if(!b) return;
  var i = +b.getAttribute('data-abrir');
+ if(!vrSerieDisponivel(VR.series[i])) return;
  VR.escolhida = i;
  vrPintar();
  vrMarcarAcervo(null);
@@ -333,7 +338,7 @@ function vrEscolherDeNovo(){
 }
 function vrAbrirSerie(lista, i){
  var s = (lista || [])[i];
- if(!s) return;
+ if(!vrSerieDisponivel(s)) return;
  var pp = vrPopup(); if(pp) pp.fechar();
  if(window.uiCartaoRotulo)
   uiCartaoRotulo('vr_cartao', [vrDataBr(s.date), s.pid, s.desc]

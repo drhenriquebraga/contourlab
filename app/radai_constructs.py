@@ -237,6 +237,38 @@ def _derrame_pericardico(masks, cru=None):
     return _bool(d) if _tem(d) else None
 
 
+CARTILAGEM_COSTAL = ("costal_cartilages",)
+
+
+def sem_cartilagem_costal(m, masks, cru=None):
+    cart = uniao_por_nome(masks, CARTILAGEM_COSTAL, cru=cru, exato=True)
+    return (_bool(m) & ~_bool(cart)) if _tem(cart) else _bool(m).copy()
+
+
+def coracao_antes_da_suavizacao(m, masks, grade, cru=None, pericardio=None,
+                                log=None):
+    novo = sem_cartilagem_costal(m, masks, cru)
+    cava = _exata(masks, "inferior_vena_cava", cru)
+    peri = (getattr(pericardio, "mascara", pericardio)
+            if pericardio is not None else _exata(masks, "pericardium", cru))
+    if _tem(cava) and _tem(peri):
+        cava, peri = _bool(cava), _bool(peri)
+        if cava.shape == novo.shape and peri.shape == novo.shape:
+            eixo, _sinal = grade.eixo_sinal("inf")
+            outros = tuple(i for i in range(novo.ndim) if i != eixo)
+            forma = [1] * novo.ndim
+            forma[eixo] = novo.shape[eixo]
+            fatias = cava.any(axis=outros).reshape(forma)
+            antes = novo
+            novo = novo & (~fatias | peri)
+            tirados = int((antes & ~novo).sum())
+            if tirados:
+                _falar(log, u"Heart_ai: antes da suavizacao, limitado ao "
+                            u"pericardio apenas nos cortes com veia cava "
+                            u"inferior (-%.2f cm3)" % _cm3(antes & ~novo, grade))
+    return novo
+
+
 def coracao_ai(masks, grade, log=None, cru=None, pericardio=None):
     try:
         if grade is None:
@@ -318,6 +350,9 @@ def coracao_ai(masks, grade, log=None, cru=None, pericardio=None):
             if derrame is not None:
                 descr += (u" Inclui o derrame pericardico (PericardEff, %.1f "
                           u"cm3)." % _cm3(derrame, grade))
+            mesclagem = coracao_antes_da_suavizacao(
+                mesclagem, masks, grade, cru=cru,
+                pericardio=False if pericardio is False else peri, log=log)
             return Construcao(CHAVE_CORACAO_AI, mesclagem, descr, entrou,
                               faltou,
                               extras={"aorta_descendente": desc,
@@ -358,6 +393,8 @@ def coracao_ai(masks, grade, log=None, cru=None, pericardio=None):
                         u"depois do plano — nao sai")
             return None
 
+        heart_ai = coracao_antes_da_suavizacao(
+            heart_ai, masks, grade, cru=cru, pericardio=peri, log=log)
         v_fim = _cm3(heart_ai, grade)
         _falar(log, u"coracao de radioterapia: Heart_ai %.0f cm3 (mesclagem "
                     u"do motor %.0f cm3; com o pericardio corrigido; cortado "
@@ -372,7 +409,9 @@ def coracao_ai(masks, grade, log=None, cru=None, pericardio=None):
                  u"acima do %s, buracos de cada corte preenchidos, um "
                  u"volume. Inclui o pericardio. A veia cava inferior sai so "
                  u"onde esta separada do coracao (fora do pericardio e do "
-                 u"coracao do modelo); o esofago fica fora."
+                 u"coracao do modelo); o esofago e a cartilagem costal ficam "
+                 u"fora. Antes da suavizacao, limitado ao pericardio apenas "
+                 u"nos cortes com veia cava inferior."
                  % (", ".join(entrou), float(E.FECHAMENTO_PERICARDIO_MM), qual))
         if derrame is not None:
             v_der = _cm3(heart_ai & derrame, grade)
@@ -648,7 +687,8 @@ DESCRICAO_DA_BAG_OAR = (
     u"mm ao sacro) e, abaixo da borda inferior da sacroiliaca (sem ela, "
     u"cabeca femoral), o que passa %g mm da parede anterior. Veia porta "
     u"fora de toda conta. Suavizada %g mm; depois estomago, duodeno, pancreas "
-    u"e delgado inteiros e colon sem reto; um volume; furos cheios no fim. "
+    u"e delgado inteiros e colon sem reto; um volume; furos cheios no fim, "
+    u"sem cartilagem costal mesmo depois do preenchimento. "
     u"Orton 2022 doi:10.1016/j.adro.2022.101031 (exclui estomago e pancreas)."
     % (RECUO_ATRAS_DO_PSOAS_MM, FOLGA_DOS_VIZINHOS_DA_BAG_MM,
        ALCANCE_MESORRETAL_MM, FAIXA_ANTERIOR_CAUDAL_MM,
@@ -683,7 +723,7 @@ def exclusoes_duras_da_bag_oar(masks, cru=None, construidas=None):
     nomes = (ORGAOS_FORA_DA_BAG + ORGAOS_DO_TORAX_FORA_DA_BAG
              + ORGAOS_FORA_DA_BAG_OAR + vasos_da_bag_oar()
              + MUSCULOS_FORA_DA_BAG_OAR + OSSOS_FORA_DA_BAG_OAR
-             + CONSTRUCOES_FORA_DA_BAG_OAR)
+             + CONSTRUCOES_FORA_DA_BAG_OAR + CARTILAGEM_COSTAL)
     h = uniao_por_nome(masks, nomes, cru=cru)
     for k, m in sorted((construidas or {}).items()):
         if (radai_names.casa_prefixo(k, CONSTRUCOES_FORA_DA_BAG_OAR
@@ -707,11 +747,12 @@ def _hull_por_corte(pontos_bool):
     if ys.size < 3:
         return pontos_bool.copy()
     pts = np.c_[ys, xs].astype(float)
-    try:
-        hull = ConvexHull(pts)
-        tri = Delaunay(pts[hull.vertices])
-    except Exception:
+    vetor = pts[1] - pts[0]
+    relativos = pts - pts[0]
+    if np.all(vetor[0] * relativos[:, 1] == vetor[1] * relativos[:, 0]):
         return pontos_bool.copy()
+    hull = ConvexHull(pts)
+    tri = Delaunay(pts[hull.vertices])
     y0, y1, x0, x1 = ys.min(), ys.max(), xs.min(), xs.max()
     gy, gx = np.mgrid[y0:y1 + 1, x0:x1 + 1]
     dentro = tri.find_simplex(np.c_[gy.ravel(), gx.ravel()].astype(float),
@@ -991,6 +1032,7 @@ def bag_bowel_oar(masks, grade, log=None, cru=None, construidas=None):
             _falar(log, u"Bag_Bowel_OAR: nada sobrou — nao sai")
             return None
         bag, furos = _sem_furo_nos_cortes(bag, grade)
+        bag = sem_cartilagem_costal(bag, masks, cru)
         cob, conf = cobertura_da_bag_oar(bag, masks, grade, h, cru,
                                          colon_retido=retido)
         _alca = None
@@ -1033,9 +1075,10 @@ def acabamento_da_bag_oar(bag, masks, grade, log=None):
     novo = radai_geom.maior_componente(novo, conectividade=1)
     if not novo.any():
         novo = bag
-    # GUARDA: o furo de cada corte axial se preenche por ultimo, depois das
-    # subtracoes; reaplicar uma exclusao depois disso reabre o furo.
+    # GUARDA: a cartilagem costal fica fora mesmo se o preenchimento do corte
+    # a cercar; as outras exclusoes continuam anteriores ao preenchimento.
     novo, furos = _sem_furo_nos_cortes(novo, grade)
+    novo = sem_cartilagem_costal(novo, masks)
     if furos > 0:
         _falar(log, u"   Bag_Bowel_OAR: furos de cada corte axial "
                     u"preenchidos no fim, +%.1f cm3" % furos)
@@ -1245,7 +1288,7 @@ def laringe(masks, grade, log=None, cru=None):
 CHAVES_DA_ATM = (("tmj_left", u"L", u"esquerdo"),
                  ("tmj_right", u"R", u"direito"))
 MANDIBULA_DA_ATM = "mandible"
-ATM_ALEM_DO_CONDILO_MM = 1.0
+ATM_ALEM_DO_CONDILO_MM = 3.0
 PIXELS_MINIMOS_DO_CONTORNO_DO_RAMO = 4
 DESCRICAO_DA_ATM = (
     u"TMJ_%s: o condilo da mandibula do lado %s, do corte em que o ramo se "

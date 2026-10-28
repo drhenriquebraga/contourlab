@@ -1007,8 +1007,12 @@ def teste_o_heart_ai_da_v85():
     m3 = dict(masks)
     m3["pericardial_effusion"] = der
     c3 = C.coracao_ai(m3, g)
-    checar(u"o derrame pericardico entra no Heart_ai, e a descricao diz",
-           c3 is not None and not (der & ~c3.mascara).any()
+    peri = C.pericardio_corrigido(m3, g).mascara
+    der_esperado = C.coracao_antes_da_suavizacao(der, m3, g,
+                                               pericardio=peri)
+    checar(u"o derrame entra respeitando o limite do pericardio nos cortes "
+           u"com cava, e a descricao diz",
+           c3 is not None and not (der_esperado & ~c3.mascara).any()
            and u"Inclui o derrame pericardico (PericardEff" in c3.descricao,
            (c3.descricao[-120:] if c3 is not None else u"-"))
     velho_d = C._derrame_pericardico
@@ -1124,7 +1128,7 @@ def _mandibula_com_ramos(coronoide_alto=False):
 
 def teste_as_atms():
     secao(u"v8.7: TMJ_L_ai e TMJ_R_ai, o condilo do corte em que o ramo se "
-          u"divide ao topo, com 1 mm em 3D")
+          u"divide ao topo, com 3 mm em 3D")
     g = G.Grade((1.0, 1.0, 1.0))
     mand = _mandibula_com_ramos()
     linhas = []
@@ -1141,8 +1145,8 @@ def teste_as_atms():
                u"topo (55)" % chave, not (cond & ~atm).any())
         checar(u"[%s]   e nada do coronoide" % chave,
                not (atm & coro).any(), u"%d voxels" % int((atm & coro).sum()))
-        esperado = G.expandir(cond, 1.0, g)
-        checar(u"[%s]   com 1 mm de margem em 3D (nem mais, nem menos)"
+        esperado = G.expandir(cond, 3.0, g)
+        checar(u"[%s]   com 3 mm de margem em 3D (nem mais, nem menos)"
                % chave, np.array_equal(atm, esperado),
                u"%d de diferenca" % int((atm ^ esperado).sum()))
         checar(u"[%s]   e so do proprio lado" % chave,
@@ -1226,8 +1230,8 @@ def teste_o_plano_medio_da_atm():
     cs = C.atms({"mandible": resto, "skull": cranio}, g, log=linhas.append)
     tl, tr = _da(cs, "tmj_left"), _da(cs, "tmj_right")
     checar(u"mandibulectomia (sobra o ramo esquerdo): a TMJ_L e o condilo "
-           u"esquerdo inteiro com 1 mm, como na mandibula inteira",
-           tl is not None and np.array_equal(tl, G.expandir(cond_e, 1.0, g)))
+           u"esquerdo inteiro com 3 mm, como na mandibula inteira",
+           tl is not None and np.array_equal(tl, G.expandir(cond_e, 3.0, g)))
     checar(u"  e a TMJ_R nao sai, e diz que nao ha mandibula do lado direito",
            tr is None and any(u"TMJ_R" in f and u"sem mandibula" in f
                               for f in cs["tmj_right"].faltou),
@@ -1245,18 +1249,18 @@ def teste_o_plano_medio_da_atm():
     for chave, cond in (("tmj_left", cond_e), ("tmj_right", cond_d)):
         a, b = _da(novo, chave), _da(velho, chave)
         checar(u"[%s] cabeca girada %g graus, mandibula inteira: o condilo "
-               u"girado do proprio lado com 1 mm, e o mesmo que pela caixa"
+               u"girado do proprio lado com 3 mm, e o mesmo que pela caixa"
                % (chave, _GIRO_DA_CABECA),
                a is not None and b is not None and np.array_equal(a, b)
-               and np.array_equal(a, G.expandir(_girada(cond), 1.0, g)))
+               and np.array_equal(a, G.expandir(_girada(cond), 3.0, g)))
 
     resto_g = _girada(resto)
     cs = C.atms({"mandible": resto_g, "skull": cranio_g}, g)
     tl, tr = _da(cs, "tmj_left"), _da(cs, "tmj_right")
     checar(u"cabeca girada e mandibulectomia: a TMJ_L e o condilo esquerdo "
-           u"girado com 1 mm, e a TMJ_R nao sai",
+           u"girado com 3 mm, e a TMJ_R nao sai",
            tl is not None and tr is None
-           and np.array_equal(tl, G.expandir(_girada(cond_e), 1.0, g)))
+           and np.array_equal(tl, G.expandir(_girada(cond_e), 3.0, g)))
     ci = _atms_pela_caixa({"mandible": resto_g, "skull": cranio_g}, g)
     tli, tri = _da(ci, "tmj_left"), _da(ci, "tmj_right")
     checar(u"ISCA: pela caixa, o condilo esquerdo inteiro sairia como TMJ_R, "
@@ -1372,6 +1376,120 @@ def teste_a_mandibula_cheia():
            bool((bloco & ~np.asarray(masks_i["mandible"], bool)).any()))
 
 
+def teste_os_recortes_do_retorno_de_campo():
+    secao(u"recortes finais da cartilagem e da uniao cervical")
+    import radai_hnlnl as H
+    g = G.Grade((1.0, 1.0, 1.0))
+    forma = (12, 24, 24)
+    heart = np.zeros(forma, bool)
+    heart[2:10, 4:20, 4:20] = True
+    peri = np.zeros_like(heart)
+    peri[2:10, 6:18, 6:18] = True
+    cava = np.zeros_like(heart)
+    cava[3, 4:6, 4:6] = True
+    cava[7, 4:6, 4:6] = True
+    cart = np.zeros_like(heart)
+    cart[5, 10:13, 10:13] = True
+    masks = {"heart": heart.copy(), "pericardium": peri,
+             "inferior_vena_cava": cava, "costal_cartilages": cart}
+    novo = C.coracao_antes_da_suavizacao(heart, masks, g)
+    checar(u"Heart: nos dois cortes com cava, fica dentro do pericardio",
+           not (novo[[3, 7]] & ~peri[[3, 7]]).any())
+    checar(u"Heart: nos demais cortes, a cava nao corta o coracao",
+           np.array_equal(novo[4], heart[4]))
+    checar(u"Heart: a cartilagem fica fora", not (novo & cart).any())
+    checar(u"Heart: a entrada nao muda", np.array_equal(masks["heart"], heart))
+    sem_peri = C.coracao_antes_da_suavizacao(
+        heart, {"inferior_vena_cava": cava}, g)
+    checar(u"Heart: sem pericardio disponivel, nao inventa um limite",
+           np.array_equal(sem_peri, heart))
+    bag, _d, _c, _f = C.acabamento_da_bag_oar(
+        heart.copy(), {"costal_cartilages": cart}, g)
+    checar(u"Bag: cartilagem cercada fica fora depois de preencher os furos",
+           not (bag & cart).any() and bag.any())
+    acab = H.acabamento_da_uniao_sem_a_clavicula({})
+    tecidos = {}
+    for i, nome in enumerate(H.FORA_DA_UNIAO):
+        b = np.zeros_like(heart)
+        b[5, 7 + i // 7, 7 + i % 7] = True
+        tecidos[nome] = b
+    uniao, desc, medida = acab(H.NOME_DA_UNIAO, heart, tecidos, g)
+    checar(u"LNL: cada um dos musculos e ossos solicitados fica fora",
+           all(not (uniao & b).any() for b in tecidos.values()))
+    excluidas = np.logical_or.reduce(list(tecidos.values()))
+    checar(u"LNL: nenhuma outra parte da uniao muda",
+           np.array_equal(uniao, heart & ~excluidas))
+    checar(u"LNL: mantem aviso clinico e registra todos os recortes",
+           u"NAO E OAR NEM CTV" in desc
+           and set(medida["vizinhos"]) == set(H.FORA_DA_UNIAO))
+    marcado = H.acabamento_da_uniao_sem_a_clavicula(
+        {}, descricao_original=H.descricao_da_uniao() + u" ESTUDO MARCADO.")
+    _m, desc_m, _i = marcado(H.NOME_DA_UNIAO, heart, tecidos, g)
+    checar(u"LNL: o acabamento nao apaga o alerta de extensao do estudo",
+           u"ESTUDO MARCADO" in desc_m)
+    masks = {H.NOME_DA_UNIAO: heart.copy(), "mandible": heart.copy()}
+    M._suavizar_construcoes(masks, g, 1.0, {
+        H.NOME_DA_UNIAO: {"suavizar_mm": 0.0, "acabamento": acab}}, [], [])
+    checar(u"LNL: exclusao que cobre toda a uniao nao restaura a antiga",
+           not masks[H.NOME_DA_UNIAO].any())
+
+
+def teste_os_vasos_do_retorno_de_campo():
+    secao(u"carotidas disponiveis; veias sobrepostas ao coracao")
+    forma = (12, 24, 24)
+    heart = np.zeros(forma, bool)
+    heart[3:9, 5:18, 5:18] = True
+    d = {"heart": heart}
+    vasos = ("common_carotid_artery_left", "common_carotid_artery_right",
+             "internal_carotid_artery_left", "internal_carotid_artery_right")
+    for i, nome in enumerate(vasos):
+        b = np.zeros(forma, bool)
+        b[6, 6:22, 6 + i] = True
+        d[nome] = b
+    veia = np.zeros(forma, bool)
+    veia[6, 4:22, 14] = True
+    d["inferior_vena_cava"] = veia
+    M.recompor_compostos(d, criar=True, subtrair={"heart"})
+    esperado = np.logical_or.reduce([d[n] for n in vasos]) & ~heart
+    checar(u"GreatArteries: todas as arterias disponiveis fora do Heart",
+           np.array_equal(d["great_arteries"], esperado))
+    checar(u"GreatArteries: cada parte tem origem nas tasks mapeadas",
+           all(nome in M.TS_MAP for nome in M.COMPOSTOS["great_arteries"]))
+    checar(u"GreatVeins: a cava fica inteira, inclusive dentro do Heart",
+           np.array_equal(d["great_veins"], veia) and (veia & heart).any())
+    sem_arteria = {"heart": heart.copy()}
+    M.recompor_compostos(sem_arteria, criar=True, subtrair={"heart"})
+    checar(u"nao cria arterias sem mascara de origem",
+           "great_arteries" not in sem_arteria)
+
+
+def teste_o_hull_sem_falha_silenciosa():
+    secao(u"envoltoria: degeneracao esperada e falha real distinguiveis")
+    import scipy.spatial as spatial
+    pontos = np.zeros((16, 16), bool)
+    pontos[2, 2] = pontos[2, 12] = pontos[12, 2] = True
+    hull = C._hull_por_corte(pontos)
+    checar(u"triangulo fecha o interior, preserva vertices e exclui exterior",
+           hull[5, 5] and not hull[12, 12] and not (pontos & ~hull).any())
+    reta = np.eye(16, dtype=bool)
+    checar(u"pontos colineares mantem exatamente a entrada",
+           np.array_equal(C._hull_por_corte(reta), reta))
+    velho = spatial.ConvexHull
+    def falhar(*a, **kw):
+        raise RuntimeError("falha sintetica de recurso")
+    try:
+        spatial.ConvexHull = falhar
+        falhou = False
+        try:
+            C._hull_por_corte(pontos)
+        except RuntimeError:
+            falhou = True
+        checar(u"falha inesperada propaga, sem entregar fechamento incompleto",
+               falhou)
+    finally:
+        spatial.ConvexHull = velho
+
+
 def main():
     print(u"=" * 68)
     print(u"test_constructs | pericardio, Heart_ai, Bag_Bowel e vasos (v8.2)")
@@ -1391,7 +1509,10 @@ def main():
               teste_as_atms,
               teste_o_plano_medio_da_atm,
               teste_os_pulmoes_somados,
-              teste_a_mandibula_cheia):
+              teste_a_mandibula_cheia,
+              teste_os_recortes_do_retorno_de_campo,
+              teste_os_vasos_do_retorno_de_campo,
+              teste_o_hull_sem_falha_silenciosa):
         try:
             t()
         except Exception as e:

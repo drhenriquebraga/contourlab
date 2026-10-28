@@ -5788,7 +5788,7 @@ def teste_a_linha_da_serie_e_o_modal_do_turno_da_v83():
     checar(u"  e a estrela da pasta favorita e ligada quando a folha abre",
            u"uiFavoritaLigar(" in _corpo_js(L.PAGINA, u"folhaOvernight"))
     ini = _sem_comentario_js(_corpo_js(L.PAGINA, u"ovIniciar"))
-    checar(u"«Salvar e iniciar» grava pela rota da configuracao COM a trava "
+    checar(u"«Salvar e incluir na fila» grava pela rota da configuracao COM a trava "
            u"do ROOT", u"fetch('/api/config'" in ini
            and u"confirmar_root: true" in ini, ini[:200])
     checar(u"  e pede a recarga a quente antes de por o card",
@@ -5798,25 +5798,25 @@ def teste_a_linha_da_serie_e_o_modal_do_turno_da_v83():
            u"rota do turno)", u"_ovEsperarRecarga" not in cod
            and u"n > 20" not in ini, ini[:200])
     pn = _sem_comentario_js(_corpo_js(L.PAGINA, u"_ovPorNaFila"))
-    checar(u"  e o turno abre ja quando nao ha serie na frente do card",
+    checar(u"incluir o turno só põe o card na fila e espera INICIAR",
            u"filaOvernight(true)" in pn
-           and u"fetch('/api/overnight/iniciar'" in pn and u"frente" in pn)
-    checar(u"  e o cartao DIZ quando a recarga ainda esta pendente",
-           u"OV.pendente = !!r.recarga_pendente" in pn
-           and u"_ovTextoAberto()" in pn
-           and u"a configuração nova vale quando a série em curso terminar"
-           in _corpo_js(L.PAGINA, u"_ovTextoAberto"), pn[-300:])
+           and u"/api/overnight/iniciar" not in pn
+           and u"/api/pipeline/iniciar" not in pn
+           and u"aguardando INICIAR" in pn)
+    checar(u"o texto de turno aberto continua dizendo quando a recarga está pendente",
+           u"a configuração nova vale quando a série em curso terminar"
+           in _corpo_js(L.PAGINA, u"_ovTextoAberto"))
     fe = _sem_comentario_js(_corpo_js(L.PAGINA, u"filaEstado"))
     checar(u"  e continua dizendo nas voltas da fila (o `/api/status` leva "
            u"`recarga_pendente`)", u"st.recarga_pendente" in fe, fe[:200])
-    checar(u"a folha do turno so tem «Cancelar» e «Salvar e iniciar»",
+    checar(u"a folha do turno so tem «Cancelar» e «Salvar e incluir na fila»",
            u"ov_bt_sem" not in cod and u"Iniciar sem salvar" not in cod
            and u"_ovTemporarios" not in cod, u"o terceiro botao voltou")
     fo = _sem_comentario_js(_corpo_js(L.PAGINA, u"filaOvernight"))
     checar(u"  e o card do turno nao leva valores de uma noite so",
            u"temporarios" not in fo and u"temporarios" not in ini, fo[:240])
     es = _sem_comentario_js(_corpo_js(L.PAGINA, u"_ovEstado"))
-    checar(u"  e «Salvar e iniciar» exige o config lido e o laudo bom",
+    checar(u"  e «Salvar e incluir na fila» exige o config lido e o laudo bom",
            u"sim.disabled = !(OV.cfg && _ovLaudoBom())" in es, es[:240])
     fp = _sem_comentario_js(_corpo_js(L.PAGINA, u"filaEstadoPintar"))
     checar(u"o cartao diz quando o card do turno FALHOU",
@@ -5842,7 +5842,7 @@ def teste_a_linha_da_serie_e_o_modal_do_turno_da_v83():
     checar(u"o Enter de dentro da folha nao confirma (captura no veu)",
            _ent.lstrip().startswith(u"ev.stopPropagation();")
            and u"addEventListener('keydown', tecla, true)" in lig, _ent[:160])
-    checar(u"  e o «Salvar e iniciar» volta habilitado quando a folha fecha",
+    checar(u"  e o «Salvar e incluir na fila» volta habilitado quando a folha fecha",
            u"sim.disabled = false" in _corpo_js(L.PAGINA, u"_ovSemBotao")
            and u"sim.disabled = true" in _corpo_js(L.PAGINA, u"_ovTravarSalvar"))
 
@@ -6616,11 +6616,11 @@ roda();
 """
 
 
-def teste_o_turno_inicia_a_fila_parada():
-    secao(u"4b: o turno inicia a fila parada")
+def teste_o_turno_aguarda_iniciar():
+    secao(u"o turno aguarda INICIAR, qualquer que seja a fila")
     import json as _json
     pag = L.PAGINA
-    nomes = (u"_ovFilaAnda", u"_ovIniciarAFila", u"_ovPorNaFila")
+    nomes = (u"_ovPorNaFila",)
     fontes = [_corpo_js(pag, n) for n in nomes]
     checar(u"as funcoes do modal do turno estao na pagina", all(fontes),
            str([bool(f) for f in fontes]))
@@ -6660,35 +6660,20 @@ def teste_o_turno_inicia_a_fila_parada():
     checar(u"o modal do turno executa no node", res is not None, erro)
     if res is None:
         return
-    p, a, z = res["parada"], res["andando"], res["pausada"]
-    checar(u"fila PARADA com serie na frente: o turno INICIA a fila (a rota "
-           u"do «Iniciar» da barra), e o cartao diz", p["urls"]
-           == [u"/api/pipeline/iniciar"] and p["erro"] is None
-           and any(u"estava parada e foi iniciada" in t for t in p["card"])
-           and p["recarregou"] == 1, str(p))
-    checar(u"  fila ANDANDO: nada a iniciar, o card espera a vez (como antes)",
-           a["urls"] == [] and any(u"Na fila, como último card" in t
-                                   for t in a["card"]), str(a))
-    checar(u"  fila PAUSADA com uma serie rodando: a rota tira a pausa (e "
-           u"responde que ja ha um processamento, que e o esperado), e o "
-           u"cartao diz que ela voltou a andar", z["urls"]
-           == [u"/api/pipeline/iniciar"] and z["erro"] is None
-           and any(u"estava pausada e voltou a andar" in t for t in z["card"]),
-           str(z))
-    checar(u"  fila VAZIA: o turno abre ja, sem tocar na fila (como antes)",
-           res["vazia"]["urls"] == [u"/api/overnight/iniciar"], str(res["vazia"]))
-    checar(u"  e a recusa do servidor vira o erro do modal, com o motivo",
-           res["recusa"]["erro"] == u"o vigia esta segmentando",
-           str(res["recusa"]))
-    linha = u"if(frente && !_ovFilaAnda(d)) return _ovIniciarAFila(d);"
-    r_i, e_i = _rodar_js_no_node(js.replace(linha, u""),
-                                 prefixo=u"radai_t_turno_")
-    checar(u"  (isca) sem a linha, a fila parada fica esperando alguem clicar "
-           u"«Iniciar» -- a checagem discrimina", linha in js
-           and r_i is not None and r_i["parada"]["urls"] == [], e_i)
+    for nome in ("parada", "andando", "pausada", "vazia", "recusa"):
+        r = res[nome]
+        checar(u"fila %s: incluir não dispara processamento e pede INICIAR" % nome,
+               r["urls"] == [] and r["erro"] is None
+               and any(u"aguardando INICIAR" in t for t in r["card"]), str(r))
+    linha = u"_ovCard('Na fila, aguardando INICIAR.');"
+    isca = js.replace(linha, u"fetch('/api/pipeline/iniciar', {method:'POST'});" + linha)
+    r_i, e_i = _rodar_js_no_node(isca, prefixo=u"radai_t_turno_")
+    checar(u"isca: o início automático indevido é detectado",
+           linha in js and r_i is not None
+           and r_i["parada"]["urls"] == [u"/api/pipeline/iniciar"], e_i)
     ov = _corpo_js(pag, u"ovIniciar")
     fo = _corpo_js(pag, u"folhaOvernight")
-    checar(u"«Salvar e iniciar» passa por `ovIniciar`, que chama `_ovPorNaFila`",
+    checar(u"«Salvar e incluir na fila» passa por `ovIniciar`, que chama `_ovPorNaFila`",
            u"_ovPorNaFila(" in ov and u"ovIniciar(true" in fo
            and u"ovIniciar(false" not in pag, u"")
 
@@ -6943,7 +6928,7 @@ def main():
               teste_o_protocolo_3d_diz_o_que_vai_ao_rtstruct,
               teste_a_data_do_nome_e_uma_regra_so,
               teste_o_pericardio_nasce_ligado_no_personalizado,
-              teste_o_turno_inicia_a_fila_parada,
+              teste_o_turno_aguarda_iniciar,
               teste_rodar_agora_nao_apaga_a_entrega_de_outra_serie_da_pasta,
               teste_substituir_refaz_a_serie_concluida,
               teste_a_linha_cabe_e_fala_com_o_leitor_de_tela,

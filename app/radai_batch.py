@@ -263,11 +263,19 @@ def pulada_no_lote(nome):
 
 
 def ler_pasta_do_lote(achados, zips, raiz, arquivos, modalidades=("CT",),
-                      incluir_zips=False, teto=500, parar=None, ao_ler=None):
+                      incluir_zips=False, teto=500, parar=None, ao_ler=None,
+                      ao_atualizar=None, finalizar_encontradas=False):
     vistos = 0
+    aceitas_ao_parar = None
+    ultima = 0.0
     for nome in arquivos:
         if parar is not None and parar():
-            break
+            if not finalizar_encontradas:
+                break
+            if aceitas_ao_parar is None:
+                aceitas_ao_parar = set(achados)
+            if not aceitas_ao_parar:
+                break
         fp = os.path.join(raiz, nome)
         if incluir_zips and nome.lower().endswith(".zip"):
             zips.append(fp)
@@ -275,7 +283,14 @@ def ler_pasta_do_lote(achados, zips, raiz, arquivos, modalidades=("CT",),
         vistos += 1
         if ao_ler is not None:
             ao_ler()
-        _juntar(achados, _cabecalho(fp), raiz, modalidades=modalidades)
+        ds = _cabecalho(fp)
+        if aceitas_ao_parar is not None and str(getattr(ds, "SeriesInstanceUID", "")) not in aceitas_ao_parar:
+            continue
+        _juntar(achados, ds, raiz, modalidades=modalidades)
+        if (ao_atualizar is not None and any(s["cortes"] >= 2 for s in achados.values())
+                and time.monotonic() - ultima >= 0.25):
+            ao_atualizar(achados)
+            ultima = time.monotonic()
         if len(achados) > teto:
             break
     return vistos
@@ -352,25 +367,52 @@ def _lote_iniciar(job):
             return
     job["raiz"] = alvo
     job["dados"] = {"achados": {}, "zips": [],
-                    "piso": int(_CFG.get("min_cortes", 20))}
+                    "piso": int(_CFG.get("min_cortes", 20)),
+                    "trava": threading.RLock(), "parciais": {}, "prontas": []}
 
 
 def _lote_ler(job, pasta, nomes):
     import radai_varrer
     d = job["dados"]
-    return ler_pasta_do_lote(
-        d["achados"], d["zips"], pasta, nomes, MODALIDADES_DA_TELA, True,
+    achados, zips = {}, []
+    def parcial(atual):
+        with d["trava"]:
+            d["parciais"][pasta] = [dict(s) for s in atual.values() if s["cortes"] >= 2]
+        radai_varrer.publicar(job, _lote_linhas(job))
+    n = ler_pasta_do_lote(
+        achados, zips, pasta, nomes, MODALIDADES_DA_TELA, True,
         TETO_SERIES_DA_TELA, parar=lambda: job["parado"],
-        ao_ler=lambda: radai_varrer.contar_arquivo(job)) > 0
+        ao_ler=lambda: radai_varrer.contar_arquivo(job),
+        ao_atualizar=parcial, finalizar_encontradas=True)
+    with d["trava"]:
+        d["parciais"].pop(pasta, None)
+        d["zips"].extend(zips)
+        for uid, s in achados.items():
+            if uid in d["achados"]:
+                antes = d["achados"][uid]
+                antes["cortes"] += s["cortes"]
+                antes["_zs"].update(s.get("_zs") or ())
+            else:
+                d["achados"][uid] = s
+        copia = {u: dict(s, _zs=set(s.get("_zs") or ())) for u, s in d["achados"].items()}
+        fechadas = fechar_varredura_do_lote(copia, [], MODALIDADES_DA_TELA,
+                                            d["piso"], TETO_SERIES_DA_TELA,
+                                            _CFG.get("marcadores"))
+        d["prontas"] = completar_da_tela(fechadas, job["raiz"], d["piso"], [])["series"]
+    return n > 0
 
 
 def _lote_linhas(job):
-    piso = job["dados"]["piso"]
-    return [{"curto": s["uid"][-8:], "desc": s.get("desc") or u"",
-             "modalidade": s.get("modalidade") or u"",
-             "cortes": s.get("cortes") or 0, "date": s.get("date") or u""}
-            for s in list(job["dados"]["achados"].values())
-            if s.get("cortes", 0) >= piso]
+    d = job["dados"]
+    with d["trava"]:
+        fora = [dict(s, carregando=False) for s in d["prontas"]]
+        for grupo in d["parciais"].values():
+            fora.extend({"curto": s["uid"][-8:], "desc": s.get("desc") or u"",
+                         "modalidade": s.get("modalidade") or u"",
+                         "cortes": s["cortes"], "date": s.get("date") or u"",
+                         "carregando": True, "bilhete": None,
+                         "recusa": u"Lendo os cortes da série…"} for s in grupo)
+        return fora
 
 
 def _lote_fechar(job):
@@ -4159,6 +4201,12 @@ letter-spacing:.5px;font-family:var(--font-mono)}
  letter-spacing:.5px;text-transform:uppercase;color:var(--text-dim)}
 .ov-root{display:flex;gap:8px;align-items:stretch}
 .ov-root input{flex:1 1 auto;min-width:0}
+#ov_roots{display:flex;flex-direction:column;gap:8px}
+#ov_interromper[hidden]{display:none}
+.lt-num{display:inline-block;font-variant-numeric:tabular-nums}
+.lt-num.nova{animation:lt-num-entra .18s ease-out}
+@keyframes lt-num-entra{from{opacity:0;transform:translateY(4px) scale(.92)}to{opacity:1;transform:none}}
+@media(prefers-reduced-motion:reduce){.lt-num.nova{animation:none}}
 .ov-laudo{margin:6px 0 0;min-height:16px;font-size:11.5px;line-height:1.45;
  color:var(--text-dim)}
 .ov-laudo.ok{color:var(--success)}
@@ -4542,6 +4590,8 @@ td.serie{width:76px;padding-top:4px !important;padding-bottom:4px !important}
    passa a varrer sozinha.</span></div>
  </div>
 </div>
+<button id="ov_interromper" type="button" class="ui-bt perigo" hidden
+ onclick="ovInterromper()" data-radai-frase>Interromper Overnight Run</button>
 @FOLHA_TURNO@
 
 @ESCOLHA@
@@ -4590,6 +4640,7 @@ function chaveDe(s){
 }
 function noCarrinho(s){ return !!CARRINHO[chaveDe(s)] }
 function porNoCarrinho(s, dentro){
+ if(dentro && (s.carregando || s.b === null || s.bilhete === null)) return;
  var k = chaveDe(s); if(!k) return;
  if(dentro){
   if(!s._raiz) s._raiz = window.PASTA_VARRIDA || '';
@@ -4703,11 +4754,15 @@ function _ltContas(d){
   p.push(uiMolde('%s pasta(s) ficaram fora do filtro de data.', [d.fora_da_data]));
  return p;
 }
+var LT_CONTAGENS = {};
 function _ltViva(s){
  var m = modalidadeDe(s);
+ var chave = s.uid || s.curto || s.desc || '', n = s.cortes || 0;
+ var mudou = LT_CONTAGENS[chave] !== n; LT_CONTAGENS[chave] = n;
  return '<span class="md">' + (m === 'MR' ? 'RM' : (m === 'CT' ? 'TC' : '—')) + '</span>'
   + '<span class="ds">' + esc(s.desc || '') + '</span>'
-  + '<span class="nm">' + esc(s.cortes || 0) + ' <span data-radai-frase>cortes</span></span>'
+  + '<span class="nm"><span class="lt-num' + (mudou ? ' nova' : '') + '">' + esc(n)
+  + '</span> <span data-radai-frase>cortes</span></span>'
   + '<span class="nm">' + esc(dataBr(s.date)) + '</span>';
 }
 function _ltFora(d, dias){
@@ -4738,6 +4793,7 @@ function _ltAoAbrirPopup(){
 
 function varrer(o){
  o = o || {};
+ LT_CONTAGENS = {};
  var p = el('pasta').value;
  if(!p){ msg('informe a pasta', false); uiTremer(el('pasta')); return }
  var dias = window.uiDias ? uiDias('lt_dias') : 7;
@@ -5046,7 +5102,7 @@ function _janelasDoVisor(s){
      {chave:'osso', rotulo:'osso'}];
 }
 function abrirVisorDaSerie(i, origem){
- var s = SERIES[i]; if(!s || !s.b || !window.uiVisor) return null;
+ var s = SERIES[i]; if(!s || s.carregando || !s.b || !window.uiVisor) return null;
  var jan = _janelasDoVisor(s), m = modalidadeDe(s);
  var esp = (s.espessura_mm != null)
    ? Number(s.espessura_mm).toFixed(2).replace('.', ',') + ' mm' : '';
@@ -5092,14 +5148,14 @@ document.addEventListener('keydown', function(ev){
 });
 
 function alternar(i){
- var s = SERIES[i]; if(!s) return;
+ var s = SERIES[i]; if(!s || s.carregando || s.b === null || s.bilhete === null) return;
  porNoCarrinho(s, !noCarrinho(s));
  sincronizarIncl(); pintarTabela() }
 
 // GUARDA: marcar e esvaziar mexem so nas series desta lista; esvaziar o que veio de outra pasta seria apagar escolha que a tela nao mostra.
 function marcar(v){
  SERIES.forEach(function(s){
-   if(s.situacao !== 'processando') porNoCarrinho(s, !!v) });
+   if(s.situacao !== 'processando' && !s.carregando && s.b !== null && s.bilhete !== null) porNoCarrinho(s, !!v) });
  sincronizarIncl(); pintarTabela()}
 
 function incluidas(){ return carrinhoLista() }
@@ -5200,6 +5256,8 @@ function _pedirADeclaracao(itens, aoSim){
   aoSim: aoSim});
 }
 function mandarParaAFila(sel, refazer, declarado){
+ sel = (sel || []).filter(function(s){ return !s.carregando && s.b !== null && s.bilhete !== null });
+ if(!sel.length) return;
  var itens = declarado ? [] : _achadosAPedir(sel);
  if(itens.length){
   _pedirADeclaracao(itens, function(){ mandarParaAFila(sel, refazer, true) });
@@ -5261,7 +5319,7 @@ function _reporPrevias(){
  umEixoVarrer();
 }
 function verNoPasso4(i){
- var s = SERIES[i]; if(!s) return;
+ var s = SERIES[i]; if(!s || s.carregando || s.b === null || s.bilhete === null) return;
  if(s.tem_rs){
   try{
    sessionStorage.setItem('radai_ver_pasta', s.pasta || el('pasta').value || '');
@@ -5321,7 +5379,13 @@ function _ovMod(v){
 function _ovValores(){
  var r = _ovQ('#ov_root'), d = _ovQ('#ov_dias'), m = _ovQ('#ov_mod [aria-checked="true"]');
  var dias = Math.max(0, Math.min(3650, parseInt((d && d.value) || '0', 10) || 0));
- return {ROOT: String((r && r.value) || '').trim(),
+ var pastas = [];
+ Array.prototype.forEach.call(document.querySelectorAll('.ui-pnl [data-ov-root]'), function(e){
+  var p = String(e.value || '').trim();
+  if(p && !pastas.some(function(q){ return p.toLowerCase() === q.toLowerCase() })) pastas.push(p);
+ });
+ if(!pastas.length && r && r.value.trim()) pastas.push(r.value.trim());
+ return {ROOT: pastas[0] || '', ROOTS: JSON.stringify(pastas),
          MODALITIES: m ? m.getAttribute('data-ov-mod') : 'CT',
          DAYS_BACK: String(dias)};
 }
@@ -5342,7 +5406,7 @@ function _ovTestar(){
  clearTimeout(OV.t);
  OV.laudo = null; _ovEstado();
  OV.t = setTimeout(function(){
-  var v = _ovValores().ROOT;
+  var valores = _ovValores(), v = valores.ROOT, pastas = JSON.parse(valores.ROOTS || JSON.stringify(v ? [v] : []));
   if(!v){
    OV.laudo = {vazio: true}; _ovLaudo('Sem pasta, o turno não tem o que varrer.', 'aviso'); _ovEstado();
    if(OV.tremerAoAbrir){ OV.tremerAoAbrir = false; _ovTremerRoot() }
@@ -5350,12 +5414,14 @@ function _ovTestar(){
   }
   OV.tremerAoAbrir = false;
   _ovLaudo('conferindo a pasta…', '');
-  fetch('/api/lote/conferir_pasta', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({caminho: v})})
-  .then(function(r){ return r.json() }).then(function(d){
-   if(_ovValores().ROOT !== v) return;
-   OV.laudo = d || {};
-   if(d && d.existe && d.leitura) _ovLaudo('A pasta existe e lê. Se ela grava, o programa confere ao salvar.', 'ok');
+  Promise.all(pastas.map(function(p){
+   return fetch('/api/lote/conferir_pasta', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({caminho: p})}).then(function(r){ return r.json() });
+  })).then(function(laudos){
+   if(_ovValores().ROOTS !== valores.ROOTS) return;
+   var d = laudos.filter(function(l){ return !(l && l.existe && l.leitura) })[0];
+   OV.laudo = d || {existe:true, leitura:true};
+   if(!d) _ovLaudo('As pastas existem e leem. A escrita será conferida ao salvar.', 'ok');
    else _ovLaudo((d && (d.erro || d.aviso)) || 'Não consegui conferir a pasta.', 'ruim');
    _ovEstado();
   }).catch(function(){ OV.laudo = {}; _ovLaudo('Não consegui conferir a pasta.', 'ruim'); _ovEstado() });
@@ -5368,12 +5434,14 @@ function _ovTremerRoot(){
 }
 function _ovConferirEscrita(v){
  if(!v.ROOT) return Promise.resolve(true);
- return fetch('/api/config/testar', {method:'POST', headers:{'Content-Type':'application/json'},
-   body: JSON.stringify({caminho: v.ROOT})})
+ var pastas; try{ pastas = JSON.parse(v.ROOTS || '[]') }catch(e){ pastas = [] }
+ if(!pastas.length) pastas = [v.ROOT];
+ return Promise.all(pastas.map(function(p){ return fetch('/api/config/testar', {method:'POST', headers:{'Content-Type':'application/json'},
+   body: JSON.stringify({caminho: p})})
   .then(function(r){ return r.json() }).then(function(d){
    if(d && d.existe && d.leitura && d.escrita) return true;
    throw new Error((d && (d.erro || d.aviso)) || 'A pasta não grava: o turno não foi salvo.');
-  });
+  }) }));
 }
 // GUARDA: Salvar e iniciar so com o config lido e a pasta boa.
 function _ovEstado(){
@@ -5386,9 +5454,13 @@ function _ovPreencher(){
   var root = String(v.ROOT != null ? v.ROOT : (p.ROOT || '')).trim();
   var mod = _ovMod(v.MODALITIES != null ? v.MODALITIES : p.MODALITIES);
   var dias = String(Math.max(0, parseInt(v.DAYS_BACK != null ? v.DAYS_BACK : (p.DAYS_BACK || '0'), 10) || 0));
-  OV.cfg = {ROOT: root, MODALITIES: mod, DAYS_BACK: dias};
+  var roots; try{ roots = JSON.parse(v.ROOTS || p.ROOTS || '[]') }catch(e){ roots = [] }
+  if(!Array.isArray(roots)) roots = [];
+  roots = [root].concat(roots).filter(function(x, i, a){ return x && a.indexOf(x) === i });
+  OV.cfg = {ROOT: root, ROOTS: JSON.stringify(roots), MODALITIES: mod, DAYS_BACK: dias};
   var r = _ovQ('#ov_root'), di = _ovQ('#ov_dias');
   if(r) r.value = root;
+  roots.filter(function(x){ return x !== root }).forEach(_ovAdicionarRaiz);
   if(di) di.value = dias;
   OV.tremerAoAbrir = !root;
   _ovEscolherMod(mod);
@@ -5397,12 +5469,26 @@ function _ovPreencher(){
   _ovLaudo('Não consegui ler a configuração desta estação.', 'ruim');
  });
 }
-function _ovAbrirPastas(){
+function _ovAdicionarRaiz(valor){
+ var lista = _ovQ('#ov_roots'); if(!lista) return;
+ var linha = document.createElement('div'); linha.className = 'ov-root';
+ var input = document.createElement('input'); input.setAttribute('data-ov-root', '1');
+ input.setAttribute('aria-label', 'Pasta adicional'); input.spellcheck = false; input.autocomplete = 'off';
+ input.value = typeof valor === 'string' ? valor : '';
+ var procurar = document.createElement('button'); procurar.type = 'button'; procurar.className = 'ui-bt';
+ procurar.setAttribute('data-ov-procurar', '1'); uiTexto(procurar, 'Procurar…');
+ var tirar = document.createElement('button'); tirar.type = 'button'; tirar.className = 'ui-bt';
+ uiTexto(tirar, 'Remover'); tirar.onclick = function(){ linha.remove(); _ovTestar() };
+ linha.appendChild(input); linha.appendChild(procurar); linha.appendChild(tirar); lista.appendChild(linha);
+ if(!valor) input.focus();
+ _ovTestar();
+}
+function _ovAbrirPastas(alvo){
  if(!window.uiExplorador) return;
  uiExplorador({titulo: 'Pasta que o turno varre', inicial: _ovValores().ROOT || '',
   origem: _ovQ('#ov_root_bt'),
   aoUsar: function(c){
-   var r = _ovQ('#ov_root'); if(!r || !c) return;
+   var r = alvo || _ovQ('#ov_root'); if(!r || !c) return;
    r.value = c; _ovTestar();
   }});
 }
@@ -5437,10 +5523,13 @@ function _ovLigar(){
    _ovEstado(); return;
   }
   if(t.closest('#ov_root_bt')){ _ovAbrirPastas(); return }
+  if(t.closest('#ov_root_add')){ _ovAdicionarRaiz(); return }
+  var procurar = t.closest('[data-ov-procurar]');
+  if(procurar){ _ovAbrirPastas(procurar.closest('.ov-root').querySelector('[data-ov-root]')); return }
  };
  var digito = function(ev){
   var t = ev.target; if(!t) return;
-  if(t.id === 'ov_root') _ovTestar();
+  if(t.id === 'ov_root' || t.hasAttribute('data-ov-root')) _ovTestar();
   else if(t.id === 'ov_dias') _ovEstado();
  };
  v.addEventListener('keydown', tecla, true);
@@ -5471,9 +5560,10 @@ function folhaOvernight(){
  OV.painel = uiPainel({
   titulo: 'Incluir Overnight Run',
   html: corpo ? corpo.innerHTML : '',
-  ok: 'Salvar e iniciar',
+  ok: 'Salvar e incluir na fila',
   cancelar: 'Cancelar',
   debaixo: true,
+  fecharFora: false,
   aoSim: function(){ var v = _ovValores();
                      _ovSemBotao(); ovIniciar(true, v) },
   aoNao: function(){ _ovSemBotao() }
@@ -5533,37 +5623,10 @@ function ovIniciar(salvar, valores){
  passo.then(function(){ return _ovPorNaFila() })
   .catch(function(e){ filaEstado(); _ovErro((e && e.message) || e) });
 }
-function _ovFilaAnda(d){
- var l = (d && d.lote) || {};
- return !!l.rodando && !l.pausa_pedida;
-}
-function _ovIniciarAFila(d){
- var pausada = !!((d && d.lote) || {}).rodando;
- return fetch('/api/pipeline/iniciar', {method:'POST'}).then(function(r){ return r.json() })
-  .then(function(r){
-   if(!(r && r.ok) && !pausada) throw new Error((r && r.erro) || 'A fila não iniciou.');
-   _ovCard(pausada
-    ? 'A fila estava pausada e voltou a andar: o turno começa quando ela chegar no card do Overnight Run.'
-    : 'A fila estava parada e foi iniciada: o turno começa quando ela chegar no card do Overnight Run.');
-   if(typeof radaiFilaCarregar === 'function') radaiFilaCarregar();
-  });
-}
 function _ovPorNaFila(){
  return filaOvernight(true).then(function(d){
-  var frente = ((d && d.cards) || []).some(function(c){
-   return c.tipo === 'serie' && (c.estado === 'esperando' || c.estado === 'rodando') });
-  if(frente && !_ovFilaAnda(d)) return _ovIniciarAFila(d);
-  if(frente){ _ovCard('Na fila, como último card: o turno começa quando a fila chegar nele.'); return }
-  _ovCard('Aplicando a configuração e abrindo o turno…');
-  return fetch('/api/overnight/iniciar', {method:'POST'}).then(function(r){ return r.json() })
-   .then(function(r){
-    if(r && r.ok){
-     OV.turno = true; OV.pendente = !!r.recarga_pendente;
-     _ovCard(_ovTextoAberto()); return }
-    var m = (r && (r.erro || r.ambiente_erro)) || 'O turno não abriu.';
-    if(r && r.ocupado) m = r.erro || m;
-    throw new Error(m);
-   });
+  if(!d || d.erro) throw new Error((d && d.erro) || 'Não consegui incluir o turno na fila.');
+  _ovCard('Na fila, aguardando INICIAR.');
  });
 }
 function _ovTextoAberto(){
@@ -5588,6 +5651,15 @@ function _ovJaNaFila(){
   });
  });
 }
+function ovInterromper(){
+ perguntar({titulo:'Interromper Overnight Run',
+  corpo:'A série em curso será interrompida; as concluídas serão preservadas.',
+  ok:'Interromper', perigo:true, aoSim:function(){
+   fetch('/api/overnight/interromper', {method:'POST'}).then(function(r){return r.json()})
+    .then(function(d){ if(d && d.ok){ OV.turno=false; filaOvernight(false) } })
+    .catch(function(e){ _ovErro(String(e)) });
+  }});
+}
 
 function filaOvernight(){
  var quero = (arguments.length ? !!arguments[0] : !NIGHT_ON);
@@ -5608,6 +5680,7 @@ function filaEstadoPintar(d){
  NIGHT_ON = !!cardTurno;
  if(!NIGHT_ON){ OV.turno = false; OV.pendente = false; OV.rootAdiado = false }
  if(cardTurno && cardTurno.estado === 'rodando') OV.turno = true;
+ var parar = el('ov_interromper'); if(parar) parar.hidden = !(NIGHT_ON && OV.turno);
  var cd = el('cd_night'), tx = el('cd_night_tx');
  if(cd) cd.classList.toggle('ligado', NIGHT_ON);
  if(tx) uiTexto(tx, (NIGHT_ON && OV.turno)
@@ -5615,7 +5688,7 @@ function filaEstadoPintar(d){
    : (cardTurno && cardTurno.estado === 'falhou'
       ? 'O turno não abriu: o motivo está no card da fila e no log. Clique para tirar.'
       : (NIGHT_ON
-         ? 'Na fila, como último card. Clique para tirar.'
+         ? (!cardTurno.iniciar_pedido ? 'Na fila, aguardando INICIAR.' : 'Na fila, como último card. Clique para tirar.')
          : 'Entra como último card da fila: quando ela chegar nele, a '
            + 'estação passa a varrer sozinha.')));
 }
@@ -6626,12 +6699,14 @@ def _corpo_da_folha_do_turno():
         u'<div class="ov-campo">'
         u'<label class="ov-rot" for="ov_root" data-radai-frase>Pasta que o '
         u'turno varre</label>'
-        u'<div class="ov-root"><input id="ov_root" spellcheck="false" '
+        u'<div id="ov_roots"><div class="ov-root"><input id="ov_root" data-ov-root="1" spellcheck="false" '
         u'autocomplete="off" aria-describedby="ov_root_laudo">'
         + radai_ui.botao_favorita(u"ov_root") +
         u'<button type="button" class="ui-bt" id="ov_root_bt" '
         u'aria-haspopup="dialog">Procurar…</button>'
-        u'</div>'
+        u'</div></div>'
+        u'<button type="button" class="ui-bt" id="ov_root_add" '
+        u'aria-label="Adicionar pasta">+</button>'
         u'<div class="ov-laudo" id="ov_root_laudo" role="status" '
         u'aria-live="polite"></div>'
         u'</div>'
@@ -6914,9 +6989,10 @@ def montar(app, opcoes=None):
 
     try:
         import radai_varrer
-        radai_varrer.registrar("lote", _lote_ler, _lote_linhas,
-                               fechar=_lote_fechar, iniciar=_lote_iniciar,
-                               pular=pulada_no_lote)
+        uso_lote = radai_varrer.registrar("lote", _lote_ler, _lote_linhas,
+                                         fechar=_lote_fechar, iniciar=_lote_iniciar,
+                                         pular=pulada_no_lote)
+        uso_lote.paralela = True
     except Exception as e:
         if callable(cfg.get("log")):
             cfg["log"](u"a varredura em segundo plano do Rodar agora nao "
@@ -7150,9 +7226,17 @@ def montar(app, opcoes=None):
         try:
             import radai_queue_state as _fila
             series = _fila.series_esperando()
+            turno = _fila.autorizar_turno()
         except Exception as e:
             return dict(_erro(e), ok=False)
+        if turno and andamento().get("rodando"):
+            return {"ok": True, "turno_agendado": True}
         if not series:
+            if turno:
+                with _TRAVA:
+                    _JOB.update({"cancelar": False, "pausar": False, "erro": ""})
+                resposta = _turno_na_vez(cfg.get("log"))
+                return resposta or {"ok": True, "turno_agendado": True}
             return {"ok": False, "vazia": True,
                     "erro": u"a fila está vazia — use «Adicionar as selecionadas à fila»"}
         return iniciar(series, ja_na_fila=True,

@@ -271,9 +271,9 @@ COMPOSTOS = {
     'lung_left':  ['lung_upper_lobe_left', 'lung_lower_lobe_left'],
 
     'carotids': ['common_carotid_artery_left', 'common_carotid_artery_right'],
-    # GUARDA: carotida nenhuma (comum ou interna) entra no composto dos grandes
-    # vasos, que vai ao OAR; elas ficam no FULL, cada uma com o seu nome.
     'great_arteries': ['aorta', 'brachiocephalic_trunk',
+                       'common_carotid_artery_left', 'common_carotid_artery_right',
+                       'internal_carotid_artery_left', 'internal_carotid_artery_right',
                        'iliac_artery_left', 'iliac_artery_right',
                        'subclavian_artery_left', 'subclavian_artery_right'],
     'great_veins': ['brachiocephalic_vein_left', 'brachiocephalic_vein_right',
@@ -1126,7 +1126,7 @@ del _n
 
 COMPOSTOS_MENOS = {
     "great_arteries": ("heart",),
-    "great_veins": ("heart",),
+    "great_veins": (),
     "carotids": ("heart",),
 }
 
@@ -1565,6 +1565,8 @@ def para_oar(masks, grade=None, log=None, volume_hu=None, modalidade=None):
                 try:
                     import numpy as _np
                     for _comp, _partes in COMPOSTOS.items():
+                        if _comp == "great_veins":
+                            continue
                         if _comp not in fora or not (absorvidos & set(_partes)):
                             continue
                         _m = _np.asarray(fora[_comp])
@@ -1777,6 +1779,14 @@ def _construir_pericardio(masks, grade, volume_hu=None, log=None, cru=None):
 def _construir_coracao(masks, grade, volume_hu=None, log=None, cru=None,
                        construidas=None):
     import radai_constructs as _rc
+    if log and _nomes.achar(masks, _nomes.CHAVE_DO_CORACAO_DO_MODELO):
+        partes = [k for k in masks if str(k).startswith((
+            "heart_atrium_", "heart_ventricle_", "heart_myocardium"))]
+        if not partes:
+            log(u"Heart_Model: esta mascara binaria nao identifica camaras "
+                u"cardiacas nem arteria pulmonar separadamente. Nao e "
+                u"possivel desmembrar esses tecidos so desta mascara; "
+                u"ela fica preservada no FULL.")
     peri = (construidas or {}).get(_rc.CHAVE_PERICARDIO)
     fora = _construcao_de_c1(_rc.coracao_ai, u"Heart_ai", masks, grade, log,
                              cru=cru, pericardio=peri)
@@ -2021,6 +2031,7 @@ def _acabamento_do_coracao(nome, m, masks, grade, log=None, spec=None):
                     u"de fora do pericardio (-%.2f cm3), depois do derrame e "
                     u"do preenchimento" % (nome, n_eso * vx, n_viz * vx))
     um = _componentes_com_protegido(um, prot)
+    um = _rc.sem_cartilagem_costal(um, masks)
     return um, None, info
 
 
@@ -2029,7 +2040,7 @@ SUAVIZACAO_A_MAIS_DO_CORACAO_MM = 3.0
 _CONTEM_DO_CORACAO = ("heart_model", "heart", "aorta", "superior_vena_cava",
                       "inferior_vena_cava", "pulmonary_vein",
                       "atrial_appendage_left", "pericardium",
-                      "pericardial_effusion")
+                      "pericardial_effusion", "great_veins")
 
 _CONTEM_DO_PERICARDIO = ("heart", "atrial_appendage_left", "great_arteries",
                          "great_veins", "aorta", "superior_vena_cava",
@@ -2396,12 +2407,12 @@ CONSTRUCOES[_ONDE_ENTRAM:_ONDE_ENTRAM] = [
          "tmj_left": {
              "suavizar_mm": 0.0, "recortar_por": (),
              "contem": ("mandible", "skull"),
-             "descricao": u"TMJ_L: o condilo esquerdo da mandibula com 1 mm "
+             "descricao": u"TMJ_L: o condilo esquerdo da mandibula com 3 mm "
                           u"em 3D (recorte do FULL)."},
          "tmj_right": {
              "suavizar_mm": 0.0, "recortar_por": (),
              "contem": ("mandible", "skull"),
-             "descricao": u"TMJ_R: o condilo direito da mandibula com 1 mm "
+             "descricao": u"TMJ_R: o condilo direito da mandibula com 3 mm "
                           u"em 3D (recorte do FULL)."}}},
     {"cod": "mandibula", "funcao": _construir_mandibula,
      "momento": "no_fim", "exige_hu": False, "exige": ("mandible",),
@@ -9556,6 +9567,10 @@ def _textos_do_conjunto(rotulo, versao_worker, tem_nv, sufixo_do_conjunto,
     serie = ("RadAI auto-contorno - SUGESTAO NAO APROVADA" if not rotulo else
              "%s - nao e o entregue (o entregue e %s)"
              % (rotulo, entregue))[:64]
+    if not rotulo or rotulo == entregue:
+        nome = serie = "RadAI STUDY"
+    elif rotulo == "RadAI_FULL":
+        nome = serie = "RadAI FULL"
     return {"StructureSetLabel": rotulo_, "StructureSetName": nome,
             "StructureSetDescription": descricao, "SeriesDescription": serie,
             "SeriesNumber": 900 if not rotulo else 901}
@@ -9577,7 +9592,7 @@ def _fora_do_fast_por_extenso():
 def _textos_do_oar_fast(rotulo, versao_worker, sufixo_do_conjunto, suspeitas,
                         suavizadas, suavizar_mm, decimar_mm, proprios=0):
     rotulo_ = (rotulo or _rotulo_do_entregue("fast"))[:16]
-    nome = "RadAI STUDY_Fast (sugestao nao aprovada)"[:64]
+    nome = "RadAI STUDY Fast"
     descricao = (
         "Conjunto entregue do modo FAST (%s): as estruturas do %s "
         "menos %s, montadas pelo mesmo pos-processamento "
@@ -9598,7 +9613,7 @@ def _textos_do_oar_fast(rotulo, versao_worker, sufixo_do_conjunto, suspeitas,
         + (" Contornos SUAVIZADOS (escala %.1f, por estrutura): o contorno "
            "NAO e a saida crua do modelo." % (suavizar_mm or 0.0)
            if suavizadas else ""))
-    serie = "RadAI STUDY_Fast - SUGESTAO NAO APROVADA"[:64]
+    serie = "RadAI STUDY Fast"
     return {"StructureSetLabel": rotulo_, "StructureSetName": nome,
             "StructureSetDescription": descricao, "SeriesDescription": serie,
             "SeriesNumber": 900}
@@ -9887,7 +9902,7 @@ def _suavizar_construcoes(masks, grade, suavizar_mm, construcoes, detalhe,
                     pass
                 novo, desc, info = _acab(nome, masks[nome], masks, grade,
                                          **_kw_acab)
-                if novo is not None and _bool_seguro(novo).any():
+                if novo is not None:
                     masks[nome] = novo
                 spec["descricao_final"] = desc
                 spec["medida_final"] = info
@@ -10087,6 +10102,11 @@ PREFIXO_DA_UNIAO = "uniao:"
 def _nomes_do_entregue(entradas, plano, masks, numero_no_plano, nomes, unioes,
                        construcoes, densidade, log=None):
     import radai_sets as _rs
+    try:
+        import radai_config as _cfg
+        _cores = _cfg.ler_nomes()
+    except (ImportError, AttributeError, OSError, ValueError):
+        _cfg, _cores = None, None
 
     def _diz(m):
         if log:
@@ -10122,6 +10142,10 @@ def _nomes_do_entregue(entradas, plano, masks, numero_no_plano, nomes, unioes,
              u"padrao" % (p, motivo))
     descr, novas, uni = {}, [], []
     for nm, nome_final, cor, de_onde in entradas:
+        if _cfg is not None and hasattr(_cfg, "cor_propria"):
+            _rgb = _cfg.cor_propria(nome_final, cfg=_cores)
+            if _rgb is not None:
+                cor = list(_rgb)
         novo = aceitos.get(nome_final, nome_final)
         if novo != nome_final and nome_final in num:
             num[novo] = num[nome_final]

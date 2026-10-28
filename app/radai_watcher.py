@@ -82,6 +82,9 @@ DEFAULT_CFG = u"""# ─── Radioterapia.AI · Vigia de Auto-Contorno ──�
 # producao por acidente). Preencha quando combinar com o TI.
 # Ex.: ROOT=\\\\servidor\\exames
 ROOT=
+# Lista JSON de pastas adicionais do Overnight Run, preenchida pela folha do turno.
+# Fora do turno apenas ROOT e varrido.
+ROOTS=[]
 
 # 1 = SIMULACAO: varre, ordena, reivindica lock e grava marcadores, mas NAO
 # chama o TotalSegmentator e NAO grava RTSTRUCT de verdade. Serve para validar
@@ -258,7 +261,7 @@ GUIA_VISTO=
 SUAVIZAR_MM=1.0
 """
 
-DEFAULTS = {"ROOT": "", "DRY_RUN": "0",
+DEFAULTS = {"ROOT": "", "ROOTS": "[]", "DRY_RUN": "0",
             "DEVICE": "auto",
             "RECORTE_NO_CORPO": "1",
             "MODALITIES": "CT", "MIN_SLICES": "20",
@@ -472,9 +475,10 @@ RESCAN_NOW = threading.Event()
 RECARREGAR = threading.Event()
 _RECARGA = {"pedida": 0, "aplicada": 0, "resultado": ""}
 _RECARGA_FEITA = threading.Condition()
-CHAVES_DO_TURNO = ("ROOT", "MODALITIES", "DAYS_BACK")
+CHAVES_DO_TURNO = ("ROOT", "ROOTS", "MODALITIES", "DAYS_BACK")
 TURNO_TEMPORARIO = {}
 ROOT_DO_TURNO = {}
+VARREDURA_DO_TURNO = [None]
 _LOG_FH = None
 _LOG_TENTADO = False
 LOG_PATH = None
@@ -963,7 +967,103 @@ def _prefixo_do_bridge():
         return "DICOM_BRIDGE_"
 
 
-def scan_root():
+def raizes_do_turno():
+    with _RECARGA_FEITA:
+        fixadas = ROOT_DO_TURNO.get("roots") if STATE.get("overnight") else None
+    if fixadas is not None:
+        return list(fixadas)
+    if not STATE.get("overnight"):
+        return [ROOT] if ROOT else []
+    try:
+        lista = json.loads(CFG.get("ROOTS") or "[]")
+    except (TypeError, ValueError):
+        lista = []
+    return _normalizar_raizes(ROOT, lista)
+
+
+def _normalizar_raizes(root, lista):
+    if not isinstance(lista, list):
+        lista = []
+    fora = []
+    for p in [root] + lista:
+        p = str(p or "").strip().strip('"')
+        if p and not any(_mesma_pasta(p, q) for q in fora):
+            fora.append(p)
+    def contida(p, q):
+        try:
+            p, q = os.path.normcase(os.path.abspath(p)), os.path.normcase(os.path.abspath(q))
+            return p != q and os.path.commonpath([p, q]) == q
+        except ValueError:
+            return False
+    return [p for p in fora if not any(contida(p, q) for q in fora)]
+
+
+def _unidades_da_varredura(raizes):
+    unidades = []
+    modificadas = {}
+    def imagens_diretas(pasta):
+        try:
+            with os.scandir(caminho_longo(pasta)) as it:
+                return any(e.is_file() and is_dicom(e.path) for e in it)
+        except OSError:
+            return False
+    for raiz in raizes:
+        try:
+            with os.scandir(caminho_longo(raiz)) as it:
+                entradas = list(it)
+            if any(e.is_file() and is_dicom(e.path) for e in entradas):
+                unidades.append(raiz)
+                continue
+            dirs = [e for e in entradas if e.is_dir(follow_symlinks=False)]
+            for e in dirs:
+                try:
+                    modificadas[e.path] = e.stat(follow_symlinks=False).st_mtime
+                except OSError:
+                    modificadas[e.path] = 0.0
+            dirs.sort(key=lambda e: modificadas[e.path], reverse=True)
+            if not dirs or imagens_diretas(dirs[0].path):
+                unidades.append(raiz)
+                continue
+            unidades.extend(e.path for e in dirs)
+        except OSError:
+            unidades.append(raiz)
+    def recente(p):
+        if p in modificadas:
+            return modificadas[p]
+        try:
+            return os.stat(caminho_longo(p)).st_mtime
+        except OSError:
+            return 0.0
+    return sorted(set(unidades), key=recente, reverse=True)
+
+
+def _pastas_da_varredura(raizes, progressivo=False):
+    unidades = _unidades_da_varredura(raizes) if progressivo else raizes
+    for unidade in unidades:
+        yield from os.walk(caminho_longo(unidade), onerror=_erro_walk)
+        yield None, None, None
+
+
+def _series_completas(series):
+    fora = {}
+    limite = (datetime.fromtimestamp(max(0.0, time.time() - DAYS_BACK * 86400))
+              .strftime("%Y%m%d%H%M%S")) if DAYS_BACK > 0 else None
+    for uid, original in series.items():
+        s = dict(original, dirs=dict(original.get("dirs") or {}))
+        if s["dirs"]:
+            s["dir"] = max(s["dirs"].items(), key=lambda kv: kv[1])[0]
+        if not s.get("date"):
+            s["data_da_pasta"] = True
+            try:
+                s["date"] = datetime.fromtimestamp(os.stat(s["dir"]).st_mtime).strftime("%Y%m%d%H%M%S")
+            except OSError:
+                s["date"] = "00000000000000"
+        if s["count"] >= MIN_SLICES and (not limite or s["date"] >= limite):
+            fora[uid] = s
+    return fora
+
+
+def scan_root(raizes=None, ao_concluir=None, parar=None):
     t0 = time.time()
     cache = cache_load()
     novo_cache = {}
@@ -975,8 +1075,15 @@ def scan_root():
         corte_pasta = time.time() - (DAYS_BACK * 2 + 30) * 86400
 
     _prefixo_bridge = _prefixo_do_bridge()
-    for dirpath, dirnames, filenames in os.walk(caminho_longo(ROOT),
-                                                onerror=_erro_walk):
+    for dirpath, dirnames, filenames in _pastas_da_varredura(
+            list(raizes) if raizes is not None else [ROOT],
+            progressivo=ao_concluir is not None):
+        if parar is not None and parar():
+            break
+        if dirpath is None:
+            if ao_concluir is not None:
+                ao_concluir(_series_completas(series), list(done_dates))
+            continue
         base = os.path.basename(dirpath)
         try:
             import radai_batch as _rl
@@ -1026,6 +1133,8 @@ def scan_root():
         else:
             achadas = {}
             for fn in filenames:
+                if parar is not None and parar():
+                    return _series_completas(series), done_dates
                 fp = os.path.join(dirpath, fn)
                 try:
                     if not is_dicom(fp):
@@ -1100,6 +1209,8 @@ def scan_root():
             if not s["pid"]:
                 s["pid"] = rec.get("pid")
 
+    if parar is not None and parar():
+        return _series_completas(series), done_dates
     cache_save(novo_cache)
 
     for uid, s in series.items():
@@ -3640,7 +3751,7 @@ def _identificadores_da_serie(s):
                   if x and x not in (".", "..")]
     so_trocados = radai_records.pastas_para_trocar(
         [sem_prefixo(s.get("dir") or "")] if s.get("dir") else [],
-        prefixos=[sem_prefixo(ROOT)] if ROOT else [])
+        prefixos=[sem_prefixo(p) for p in raizes_do_turno()])
     return conferidos, so_trocados
 
 
@@ -4186,7 +4297,21 @@ def _estruturas_do_motor(cod):
 def _destino(s):
     if not OUT_DIR:
         return Path(s["dir"])
-    return Path(OUT_DIR) / rel_root(s["dir"])
+    import hashlib
+    fonte = Path(sem_prefixo(s["dir"]))
+    for raiz in [ROOT] + raizes_do_turno():
+        if not raiz:
+            continue
+        try:
+            relativo = fonte.relative_to(Path(sem_prefixo(raiz)))
+        except ValueError:
+            continue
+        destino = Path(OUT_DIR)
+        if not _mesma_pasta(raiz, ROOT):
+            chave = hashlib.sha256(os.path.normcase(os.path.abspath(raiz)).encode("utf-8")).hexdigest()[:12]
+            destino /= "origem_" + chave
+        return destino / relativo
+    raise ValueError("a pasta da serie nao pertence a uma raiz configurada")
 
 
 def _arranque_do_cache_por_task():
@@ -4510,13 +4635,28 @@ def _root_no_arquivo():
 def root_para_o_proximo_turno():
     with _RECARGA_FEITA:
         do_turno = ROOT_DO_TURNO.get("root")
+        fixadas = ROOT_DO_TURNO.get("roots")
         tmp = TURNO_TEMPORARIO.get("ROOT")
+        tmp_roots = TURNO_TEMPORARIO.get("ROOTS")
     if do_turno is None or not STATE.get("overnight"):
         return u""
     novo = tmp if tmp is not None else _root_no_arquivo()
-    if novo is None or _mesma_pasta(novo, do_turno):
+    if novo is None:
         return u""
-    return novo
+    if not _mesma_pasta(novo, do_turno):
+        return novo
+    if fixadas is not None:
+        try:
+            if tmp_roots is None:
+                _texto, valores = radai_config.ler_arquivo(str(CFG_PATH))
+                tmp_roots = valores.get("ROOTS") or "[]"
+            novas = _normalizar_raizes(novo, json.loads(tmp_roots))
+            chave = lambda p: os.path.normcase(os.path.abspath(p))
+            if set(map(chave, novas)) != set(map(chave, fixadas)):
+                return novo or u"ROOTS"
+        except (OSError, TypeError, ValueError):
+            pass
+    return u""
 
 
 def recarregar_cfg():
@@ -4786,8 +4926,81 @@ def cancelar_serie_do_vigia(pausar=True):
             "vigia_pausado": bool(pausar)}
 
 
+def _parar_varredura_do_turno(estado):
+    andamento = estado.pop("varredura", None)
+    era_do_turno = andamento is not None or "varredura_tentadas" in estado
+    if andamento:
+        andamento["parar"].set()
+    estado.pop("varredura_tentadas", None)
+    if era_do_turno:
+        estado["fila"] = None
+        estado["proxima_varredura"] = 0.0
+
+
+def _serie_ficou_em_transito(s):
+    if QUIET_S <= 0:
+        return False
+    corte = time.time() - QUIET_S
+    try:
+        for pasta in (s.get("dirs") or {s["dir"]: 0}):
+            with os.scandir(caminho_longo(pasta)) as entradas:
+                for e in entradas:
+                    if not e.is_file() or e.stat().st_mtime < corte or not is_dicom(e.path):
+                        continue
+                    ds = pydicom.dcmread(e.path, stop_before_pixels=True,
+                                         specific_tags=["SeriesInstanceUID"])
+                    if str(getattr(ds, "SeriesInstanceUID", "")) == s["uid"]:
+                        return True
+    except (OSError, ValueError):
+        return True
+    return False
+
+
+def _varrer_turno_em_paralelo(estado):
+    andamento = estado.get("varredura")
+    if andamento is None:
+        andamento = {"parar": threading.Event(), "trava": threading.Lock(),
+                     "snapshot": None, "feito": False, "erro": None}
+        estado["varredura"] = andamento
+        VARREDURA_DO_TURNO[0] = andamento
+        estado["varredura_tentadas"] = set()
+        estado["proxima_varredura"] = float("inf")
+        RESCAN_NOW.clear()
+        raizes = raizes_do_turno()
+        def publicar(series, datas):
+            with andamento["trava"]:
+                andamento["snapshot"] = (series, datas)
+        def ler():
+            try:
+                series, datas = scan_root(raizes, publicar,
+                                          andamento["parar"].is_set)
+                if not andamento["parar"].is_set():
+                    publicar(series, datas)
+            except Exception as e:
+                andamento["erro"] = type(e).__name__
+            finally:
+                with andamento["trava"]:
+                    andamento["feito"] = True
+        threading.Thread(target=ler, daemon=True,
+                         name="radai-varredura-turno").start()
+    with andamento["trava"]:
+        parcial = andamento["snapshot"]
+        andamento["snapshot"] = None
+        feito = andamento["feito"]
+    if feito:
+        estado.pop("varredura", None)
+        estado["proxima_varredura"] = time.time() + SCAN_EVERY
+        if andamento["erro"]:
+            wlog(u"a varredura do turno nao terminou (%s); as series ja "
+                 u"encontradas ficam na fila" % andamento["erro"])
+        if parcial is None and estado.get("fila") is None:
+            parcial = ({}, [])
+    return parcial
+
+
 def _uma_volta(estado):
     if RECARREGAR.is_set():
+        _parar_varredura_do_turno(estado)
         RECARREGAR.clear()
         with _RECARGA_FEITA:
             _alvo_da_recarga = _RECARGA["pedida"]
@@ -4817,6 +5030,7 @@ def _uma_volta(estado):
             _RECARGA_FEITA.notify_all()
 
     if not STATE["ligado"]:
+        _parar_varredura_do_turno(estado)
         estado["turno"] = False
         if estado.get("fila"):
             estado["fila"] = None
@@ -4838,19 +5052,30 @@ def _uma_volta(estado):
     agora = time.time()
     precisa_varrer = (agora >= estado["proxima_varredura"] or RESCAN_NOW.is_set()
                       or estado["fila"] is None)
+    progressivo = bool(STATE.get("overnight"))
+    parcial = None
+    if progressivo and (precisa_varrer or estado.get("varredura")):
+        parcial = _varrer_turno_em_paralelo(estado)
+        precisa_varrer = parcial is not None
+    elif not progressivo:
+        _parar_varredura_do_turno(estado)
     if precisa_varrer:
         RESCAN_NOW.clear()
-        STATE["root_ok"] = os.path.isdir(ROOT)
+        STATE["root_ok"] = any(os.path.isdir(p) for p in raizes_do_turno())
         if not STATE["root_ok"]:
-            wlog("ROOT inacessivel: %s — tento de novo na proxima varredura" % ROOT)
+            wlog("pastas de leitura inacessiveis — tento de novo na proxima varredura")
             estado["fila"] = []
             estado["proxima_varredura"] = agora + SCAN_EVERY
             return
-        series, done_dates = scan_root()
+        series, done_dates = parcial if progressivo else scan_root()
+        if progressivo:
+            STATE["series_total"] = len(series)
+            _lembrar_da_varredura(series)
         if not estado.get("travas_conferidas"):
             estado["travas_conferidas"] = True
             soltar_travas_mortas_ao_abrir(series)
-        estado["fila"] = build_queue(series, done_dates)
+        estado["fila"] = [s for s in build_queue(series, done_dates)
+                          if s["uid"] not in estado.get("varredura_tentadas", ())]
         _publicar_fila_do_vigia(estado["fila"])
         _faxina_do_cache()
         with LOCK:
@@ -4871,12 +5096,14 @@ def _uma_volta(estado):
               (" | %d adiada(s) nesta maquina (recurso ou trava; nao contam "
                "tentativa)" % STATE["adiadas"]) if STATE.get("adiadas") else "",
               STATE["scan_secs"]))
-        estado["proxima_varredura"] = time.time() + SCAN_EVERY
+        if not estado.get("varredura"):
+            estado["proxima_varredura"] = time.time() + SCAN_EVERY
         salvar_status()
 
     fila = estado["fila"] or []
     if not fila:
-        time.sleep(min(15, max(1, estado["proxima_varredura"] - time.time())))
+        time.sleep(0.1 if estado.get("varredura") else min(
+            15, max(1, estado["proxima_varredura"] - time.time())))
         return
 
     if (_fila_da_estacao("fechando_ao_fim", padrao=False)
@@ -4912,12 +5139,21 @@ def _uma_volta(estado):
 
     try:
         s = fila.pop(0)
+        if progressivo:
+            estado.setdefault("varredura_tentadas", set()).add(s["uid"])
         with LOCK:
             STATE["n_queue"] = len(fila)
         if has_marker(s["dir"], s["uid"], "done"):
             return
+        if progressivo and _serie_ficou_em_transito(s):
+            with LOCK:
+                STATE["em_transito"] += 1
+            return
         if not claim(s["dir"], s["uid"], {"machine": MACHINE, "pid_os": os.getpid(),
                                           "start": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}):
+            return
+        if progressivo and not (STATE.get("overnight") and STATE.get("ligado")):
+            unclaim(s["dir"], s["uid"])
             return
         TRAVAS_SOLTAS_AO_ABRIR.pop(s["uid"], None)
         _terminou = False
@@ -6553,6 +6789,18 @@ def conferir_temporarios(tmp):
         return None, None, (u"o turno so aceita %s sem gravar, e recusou: %s"
                             % (", ".join(CHAVES_DO_TURNO), ", ".join(estranhas)))
     fora, laudo = {}, None
+    if "ROOTS" in tmp:
+        try:
+            raizes = json.loads(tmp["ROOTS"])
+            if not isinstance(raizes, list) or not all(isinstance(p, str) and p.strip() for p in raizes):
+                raise ValueError()
+        except (TypeError, ValueError):
+            return None, None, u"ROOTS deve ser uma lista JSON de pastas."
+        for raiz in raizes:
+            teste, laudo, erro = conferir_temporarios({"ROOT": raiz})
+            if erro:
+                return None, laudo, erro
+        fora["ROOTS"] = json.dumps(raizes, ensure_ascii=False)
     if "ROOT" in tmp:
         root = (u"%s" % (tmp.get("ROOT") or u"")).strip().strip('"')
         try:
@@ -6658,7 +6906,7 @@ def _abrir_turno(origem):
         wlog(u"turno com valores TEMPORARIOS (nao gravados no "
              u"radai_watcher.config): %s%s -- os gravados voltam quando o "
              u"turno for encerrado"
-             % (", ".join(u"%s=%s" % (k, valores[k]) for k in sorted(valores)),
+             % (", ".join(sorted(valores)),
                 (u" | laudo da pasta: %s" % _laudo_em_frase(laudo))
                 if laudo is not None else u""))
         with _RECARGA_FEITA:
@@ -6699,6 +6947,9 @@ def _abrir_turno(origem):
     with LOCK:
         STATE["overnight"] = True
         STATE["overnight_desde"] = time.time()
+    raizes = raizes_do_turno()
+    with _RECARGA_FEITA:
+        ROOT_DO_TURNO["roots"] = raizes
     wlog("=== OVERNIGHT RUN aberto nesta estacao (%s) — a fila pega o caso "
          "mais recente primeiro ===" % quem)
     wlog("energia: com o turno aberto, a estacao fica acordada ate o turno "
@@ -6726,6 +6977,9 @@ Q_FEITO, Q_FALHOU = "pronto", "falhou"
 
 @app.post("/api/overnight/encerrar")
 def overnight_encerrar():
+    andamento = VARREDURA_DO_TURNO[0]
+    if andamento:
+        andamento["parar"].set()
     adiada = bool(root_para_o_proximo_turno())
     with _RECARGA_FEITA:
         ROOT_DO_TURNO.clear()
@@ -6748,6 +7002,14 @@ def overnight_encerrar():
     except Exception:
         pass
     return {"ok": True, "devolvidos": devolvidos}
+
+
+@app.post("/api/overnight/interromper")
+def overnight_interromper():
+    cancelamento = cancelar_serie_do_vigia(pausar=False)
+    resposta = overnight_encerrar()
+    resposta["interrompida"] = bool(cancelamento.get("ok"))
+    return resposta
 
 
 @app.get("/api/overnight/frota")

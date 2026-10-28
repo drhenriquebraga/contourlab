@@ -931,6 +931,7 @@ def teste_o_card_do_turno_abre_quando_a_fila_chega_nele():
         L._CFG["abrir_turno"] = mod.abrir_turno_pela_fila
 
         def _rodar(pausar=False):
+            fila.autorizar_turno()
             with L._TRAVA:
                 L._JOB.update({"rodando": True, "cancelar": False,
                                "pausar": bool(pausar), "erro": "", "feitas": 0,
@@ -1037,6 +1038,10 @@ def teste_o_card_que_voltou_do_disco_abre_e_a_estacao_fica_acordada():
                and not mod.STATE["overnight"])
         fila.limpar()
         fila.overnight(True)
+        checar(u"card incluído sem INICIAR não abre ao voltar do disco",
+               mod.abrir_o_turno_que_voltou_da_fila() is None
+               and not mod.STATE["overnight"])
+        fila.autorizar_turno()
         r = mod.abrir_o_turno_que_voltou_da_fila()
         c = _card_do_turno(fila)
         checar(u"sem nada na frente, o card que voltou do disco abre o turno",
@@ -1446,6 +1451,16 @@ def teste_o_root_trocado_no_turno_vale_no_seguinte():
         r = mod.overnight_iniciar()
         checar(u"(pre) o turno abre na pasta gravada", r.get(u"ok") is True
                and mod.ROOT == share_a, str((r, mod.ROOT))[:200])
+        radai_config.escrever(str(mod.CFG_PATH), {"ROOTS": json.dumps([share_a, share_b])})
+        checar(u"mudar só ROOTS sinaliza próximo turno sem mudar origens em uso",
+               mod.status().get("root_no_proximo_turno") is True
+               and mod.raizes_do_turno() == [share_a])
+        mod.overnight_encerrar()
+        checar(u"encerrar retira o sinalizador ROOTS adiado",
+               mod.status().get("root_no_proximo_turno") is False)
+        mod.esperar_recarga(10)
+        fila.overnight(True)
+        mod.overnight_iniciar()
         radai_config.escrever(str(mod.CFG_PATH), {"ROOT": share_b})
         rr = mod.pedir_recarga()
         checar(u"gravar outra pasta com o turno aberto: a recarga diz que ela "
@@ -1490,6 +1505,222 @@ def teste_o_root_trocado_no_turno_vale_no_seguinte():
         fila.limpar()
 
 
+def teste_stream_do_turno_e_raizes():
+    secao(u"turno progressivo: exame completo antes da descoberta terminar")
+    import threading
+    import pydicom
+    from pydicom.dataset import FileDataset, FileMetaDataset
+    from pydicom.uid import ExplicitVRLittleEndian, CTImageStorage
+    base = temp()
+    root = os.path.join(base, "share")
+    recente = os.path.join(root, "RECENTE")
+    antiga = os.path.join(root, "ANTIGA")
+    agora = time.time()
+    def escrever(pasta, uid, estudo, axial=True):
+        os.makedirs(pasta)
+        for i in range(20):
+            fp = os.path.join(pasta, "%03d.dcm" % i)
+            fm = FileMetaDataset()
+            fm.TransferSyntaxUID = ExplicitVRLittleEndian
+            fm.MediaStorageSOPClassUID = CTImageStorage
+            fm.MediaStorageSOPInstanceUID = uid + ".%d" % (i + 1)
+            ds = FileDataset(fp, {}, file_meta=fm, preamble=b"\0" * 128)
+            ds.SOPClassUID = CTImageStorage
+            ds.SOPInstanceUID = fm.MediaStorageSOPInstanceUID
+            ds.SeriesInstanceUID, ds.StudyInstanceUID = uid, estudo
+            ds.PatientID, ds.Modality = "FANTOMA", "CT"
+            ds.SeriesDate, ds.SeriesTime = "20261028", "120000"
+            ds.ImagePositionPatient = [0, 0, i * 2]
+            ds.ImageOrientationPatient = [1, 0, 0, 0, 1, 0] if axial else [1, 0, 0, 0, 0, 1]
+            ds.SliceThickness = 2
+            ds.save_as(fp, enforce_file_format=True)
+            os.utime(fp, (agora - 600, agora - 600))
+    escrever(os.path.join(recente, "AXIAL"), "1.2.826.9.101", "1.2.826.9.10")
+    escrever(os.path.join(recente, "CORONAL"), "1.2.826.9.102", "1.2.826.9.10", False)
+    escrever(os.path.join(antiga, "AXIAL"), "1.2.826.9.201", "1.2.826.9.20")
+    os.utime(antiga, (agora - 100, agora - 100))
+    os.utime(recente, (agora, agora))
+    W = _vigia_da_noite(base, root)
+    W.STATE.update({"overnight": True, "ligado": True, "paused": False})
+    W.QUIET_S = 30
+    W.DAYS_BACK = 0
+    checar(u"raiz com reconstruções diretamente nas filhas é uma unidade inteira",
+           W._unidades_da_varredura([recente]) == [recente])
+    velha_leitura = W.pydicom.dcmread
+    chegou, liberar = threading.Event(), threading.Event()
+    def ler(fp, *a, **k):
+        if "ANTIGA" in str(fp):
+            chegou.set()
+            liberar.wait(10)
+        return velha_leitura(fp, *a, **k)
+    W.pydicom.dcmread = ler
+    estado = {"fila": None, "proxima_varredura": 0, "turno": True,
+              "travas_conferidas": True}
+    processadas = []
+    W._status_periodico = lambda: None
+    W._faxina_do_cache = lambda: None
+    W._publicar_fila_do_vigia = lambda _fila: None
+    W._fila_da_estacao = lambda *a, **k: True
+    W.quem_esta_segmentando = lambda: None
+    W.recurso_esgotado = lambda: False
+    W.claim = lambda *a, **k: True
+    W.has_marker = lambda *a: False
+    W.process_series = lambda s: processadas.append(s["uid"])
+    W.salvar_status = lambda: None
+    W._sinalizar_em_uso_agora = lambda: None
+    W._contar_o_desfecho_a_fila = lambda uid: None
+    try:
+        W._uma_volta(estado)
+        checar(u"a descoberta continua na pasta antiga enquanto a recente fechou",
+               chegou.wait(10))
+        W._uma_volta(estado)
+        checar(u"processa uma série do exame recente antes de terminar a descoberta",
+               processadas == ["1.2.826.9.101"] and not liberar.is_set(), processadas)
+        checar(u"a triagem viu as duas reconstruções do exame e rejeitou a coronal",
+               W.STATE.get("nao_simulacao") == 1, W.STATE.get("nao_simulacao"))
+        W.overnight_interromper()
+        checar(u"interromper cancela a descoberta e desliga novas séries",
+               not W.STATE["ligado"] and estado["varredura"]["parar"].is_set())
+        liberar.set()
+        W._uma_volta(estado)
+        checar(u"interromper preserva o que terminou e não processa a antiga",
+               processadas == ["1.2.826.9.101"], processadas)
+    finally:
+        liberar.set()
+        W.pydicom.dcmread = velha_leitura
+        W._parar_varredura_do_turno(estado)
+    W.ROOT_DO_TURNO.clear()
+    alvo = {"dir": os.path.join(recente, "AXIAL"), "uid": "1.2.826.9.101"}
+    checar(u"o exame antigo continua quieto antes de tocar os arquivos",
+           not W._serie_ficou_em_transito(alvo))
+    fp = os.path.join(recente, "AXIAL", "000.dcm")
+    os.utime(fp, None)
+    checar(u"um corte alterado depois do snapshot volta a ser considerado em trânsito",
+           W._serie_ficou_em_transito(alvo))
+    W.STATE["overnight"] = True
+    outra = os.path.join(base, "outra")
+    os.makedirs(outra)
+    W.CFG["ROOTS"] = json.dumps([root, antiga, root, outra])
+    checar(u"raízes múltiplas não repetem a principal nem sua subpasta",
+           W.raizes_do_turno() == [root, outra])
+    W.OUT_DIR = os.path.join(base, "saida")
+    a = W._destino({"dir": os.path.join(root, "EXAME", "CT")})
+    b = W._destino({"dir": os.path.join(outra, "EXAME", "CT")})
+    checar(u"mesmo nome de exame em raízes diferentes não mistura OUT_DIR",
+           a != b and os.path.commonpath([str(a), W.OUT_DIR]) == W.OUT_DIR
+           and os.path.commonpath([str(b), W.OUT_DIR]) == W.OUT_DIR)
+    checar(u"ROOTS inválido é recusado sem truncar a configuração",
+           bool(W.conferir_temporarios({"ROOTS": "[invalido"})[2]))
+
+
+def teste_lote_parcial_e_parar():
+    secao(u"Rodar agora: mostra dois cortes e parar termina só o que encontrou")
+    from types import SimpleNamespace
+    import radai_batch as B
+    import radai_varrer as V
+    root = temp()
+    job = V._novo("lote", root, 0, {})
+    velhos = (dict(B._CFG), B._cabecalho, B._com_bilhete, V.publicar)
+    B._CFG["min_cortes"] = 2
+    B._cabecalho = lambda fp: SimpleNamespace(
+        SeriesInstanceUID="1.2.826.9.2" if "B" in os.path.basename(fp) else "1.2.826.9.1",
+        StudyInstanceUID="1.2.826.9.8", Modality="CT", ImagePositionPatient=[0, 0, 0],
+        ImageOrientationPatient=[1, 0, 0, 0, 1, 0])
+    B._com_bilhete = lambda series: [s.update(bilhete="B" + s["uid"]) for s in series]
+    parciais = []
+    def publicar(j, linhas, *a, **k):
+        parciais.append([dict(s) for s in linhas])
+        if any(s.get("carregando") for s in linhas):
+            job["parado"] = True
+        return velhos[3](j, linhas, *a, **k)
+    V.publicar = publicar
+    try:
+        B._lote_iniciar(job)
+        B._lote_ler(job, root, ["A1", "A2", "B1", "A3"])
+        linhas = B._lote_linhas(job)
+        checar(u"depois de dois cortes a linha parcial aparece sem bilhete",
+               parciais and parciais[0][0].get("cortes") == 2
+               and parciais[0][0].get("carregando") is True
+               and parciais[0][0].get("bilhete") is None, parciais[:1])
+        checar(u"parar completa os cortes da série já encontrada, sem iniciar outra",
+               len(linhas) == 1 and linhas[0]["cortes"] == 3
+               and not linhas[0]["carregando"] and linhas[0].get("bilhete"), linhas)
+    finally:
+        B._CFG.clear()
+        B._CFG.update(velhos[0])
+        B._cabecalho, B._com_bilhete, V.publicar = velhos[1:]
+
+
+def teste_iniciar_arma_o_turno_sem_duplicar_lote():
+    secao(u"INICIAR arma o card; incluir não começa nem duplica lote em curso")
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    import radai_batch as B
+    import radai_queue_state as F
+    velhos = (dict(B._CFG), dict(B._JOB))
+    abriu = []
+    def abrir():
+        abriu.append(1)
+        return {"ok": True}
+    try:
+        F.limpar()
+        app = FastAPI()
+        B.montar(app, {"abrir_turno": abrir})
+        F.montar(app)
+        cli = TestClient(app)
+        B._JOB.update({"rodando": False, "cancelar": False, "pausar": False, "erro": ""})
+        cli.post("/api/fila/overnight", json={"ligado": True})
+        checar(u"incluir o card deixa o turno desarmado e não abre",
+               not F.turno_na_vez() and not abriu)
+        r = cli.post("/api/pipeline/iniciar").json()
+        checar(u"INICIAR com só o card abre uma vez", r.get("ok") and abriu == [1])
+        F.overnight(True)
+        B._JOB["rodando"] = True
+        r = cli.post("/api/pipeline/iniciar").json()
+        checar(u"INICIAR durante lote só arma o turno, sem outra segmentação",
+               r.get("ok") and r.get("turno_agendado") and abriu == [1]
+               and B._JOB["rodando"])
+        js = _funcao_do_js(B.PAGINA, "_ovPorNaFila")
+        o, erro = _rodar_no_node(js + u"""
+var chamadas=[]; function filaOvernight(){chamadas.push('fila');return Promise.resolve({cards:[]})}
+function _ovCard(t){} function fetch(u){chamadas.push(u);return Promise.resolve({json:function(){return {ok:true}}})}
+_ovPorNaFila().then(function(){console.log('JSON:'+JSON.stringify({chamadas:chamadas}))});
+""")
+        checar(u"o clique de incluir no navegador chama só a fila, sem iniciar pipeline ou turno",
+               o and o.get("chamadas") == ["fila"], erro or o)
+    finally:
+        F.limpar()
+        B._CFG.clear()
+        B._CFG.update(velhos[0])
+        B._JOB.clear()
+        B._JOB.update(velhos[1])
+
+
+def teste_lote_nao_usa_linha_parcial():
+    secao(u"linha parcial do Rodar agora não abre visor nem entra na fila")
+    import radai_batch as B
+    nomes = ("_ltViva", "alternar", "marcar", "mandarParaAFila",
+             "abrirVisorDaSerie", "verNoPasso4")
+    js = u"\n".join(_funcao_do_js(B.PAGINA, n) for n in nomes)
+    out, erro = _rodar_no_node(js + u"""
+var SERIES=[{carregando:true,bilhete:null,b:'ISCA',uid:'1.2.826.9.1',cortes:2}];
+var ACOES=[], LT_CONTAGENS={};
+function modalidadeDe(){return 'CT'} function esc(x){return String(x)} function dataBr(){return ''}
+function porNoCarrinho(){ACOES.push('carrinho')} function noCarrinho(){return false}
+function sincronizarIncl(){} function pintarTabela(){}
+var window={uiVisor:function(){ACOES.push('visor')}};
+function fetch(){ACOES.push('fetch')}
+var location={href:''};
+alternar(0); marcar(true); mandarParaAFila(SERIES); abrirVisorDaSerie(0); verNoPasso4(0);
+console.log('JSON:'+JSON.stringify({acoes:ACOES,href:location.href,html:_ltViva(SERIES[0])}));
+""")
+    checar(u"parcial com bilhete nulo, mesmo com b forjado, não executa ações",
+           out and out.get("acoes") == [] and not out.get("href"), erro or out)
+    checar(u"a pintura parcial mostra contagem e não contém botões ou links",
+           out and "2" in out["html"] and "<button" not in out["html"]
+           and "<a " not in out["html"], erro or out)
+
+
 def main():
     print(u"=" * 70)
     print(u"  O OVERNIGHT RUN — o turno da noite e o que ele mexe na estacao")
@@ -1515,7 +1746,10 @@ def main():
               teste_iniciar_sem_salvar_vale_so_para_o_turno,
               teste_a_recarga_pendente_e_esperada_ou_dita,
               teste_a_folha_do_turno_so_le_a_pasta_ao_abrir,
-              teste_o_root_trocado_no_turno_vale_no_seguinte):
+              teste_o_root_trocado_no_turno_vale_no_seguinte,
+              teste_stream_do_turno_e_raizes, teste_lote_parcial_e_parar,
+              teste_iniciar_arma_o_turno_sem_duplicar_lote,
+              teste_lote_nao_usa_linha_parcial):
         t()
     print(u"\n" + u"=" * 70)
     if _falhas:

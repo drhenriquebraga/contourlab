@@ -458,10 +458,17 @@ class Saida(object):
                         _hn, "CLAVICULA_DO_IVB", {}) if _k in cervicais)
                     for _k in _ivb:
                         construcoes[_k]["acabamento"] = _hn.acabamento_do_ivb
-                    for _u in (_da_uniao if _ivb else ()):
+                    for _u in _da_uniao:
                         if _u in construcoes:
                             construcoes[_u]["acabamento"] = (
-                                _hn.acabamento_da_uniao_sem_a_clavicula(_ivb))
+                                _hn.acabamento_da_uniao_sem_a_clavicula(
+                                    _ivb, descricao_original=observacoes.get(_u)))
+                            _m, _d, _i = construcoes[_u]["acabamento"](
+                                _u, masks[_u], masks, grade, log=self.log)
+                            if _m is not None:
+                                masks[_u] = _m
+                            if _d:
+                                observacoes[_u] = _d
                     _subst = _parotidas_do_viii_no_full(
                         _hn, cervicais, masks, grade, self.log)
                     for _lado, (_chave, _m, _ts) in _subst.items():
