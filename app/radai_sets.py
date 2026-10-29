@@ -262,7 +262,7 @@ PERMITIDOS_NO_OAR = frozenset([
     "Skin", "ChestWall_L", "ChestWall_R",
     "breast_left", "breast_right",
     "vertebrae_cervical", "vertebrae_thoracic", "vertebrae_lumbar",
-    "spinal_cord",
+    "spinal_cord", "cauda_equina",
     "liver", "spleen", "stomach", "pancreas", "gallbladder",
     "kidney_left", "kidney_right", "kidney_cyst_left", "kidney_cyst_right",
     "duodenum",
@@ -298,7 +298,10 @@ PERMITIDOS_NO_OAR = frozenset([
     "larynx", "tmj_left", "tmj_right", "lungs",
 ])
 
-FORA_DO_OAR_FAST = frozenset(["bag_bowel_oar", "anus"])
+FORA_DO_OAR_FAST = frozenset([
+    "bag_bowel_oar", "anus", "Skin", "ChestWall_L", "ChestWall_R",
+    "ribs_left", "ribs_right", "costal_cartilages",
+])
 PERMITIDOS_NO_OAR_FAST = frozenset(PERMITIDOS_NO_OAR - FORA_DO_OAR_FAST)
 
 # GUARDA: chave que substitui -> chave substituida, com o MESMO nome no TPS.
@@ -576,6 +579,8 @@ EXIGENCIAS_DAS_CONSTRUCOES = {
                       "fora_do_modo": ("fast",)},
     "Skin": {"tasks": ("base",), "so_tc": True},
     "rectum": {"estruturas": ("colon",)},
+    "cauda_equina": {"tasks": ("base",),
+                      "estruturas": ("spinal_cord", "vertebrae_L2")},
     # GUARDA: a parotida do VIII exige tambem o ECM (headneck_muscles), que
     # a recorta.
     "LNL_UNION": {"tasks": ("hnlnl",), "so_tc": True},

@@ -1070,8 +1070,28 @@ def teste_as_construcoes_da_onda_2_estao_ligadas():
         checar(u"%s antes de %s (%s)" % (a, b, porque), antes(a, b),
                u" -> ".join(passos))
     checar(u"a Bag_Bowel_OAR e a ULTIMA construcao (recebe a pele pronta)",
-           [p for p in passos if p in cods][-1] == "bag_bowel_oar",
+           [p for p in passos if p in cods and p not in {
+               c["cod"] for c in E.CONSTRUCOES if c.get("terminal")}][-1]
+           == "bag_bowel_oar",
            u" -> ".join(passos))
+    from unittest.mock import Mock
+    import numpy as np
+    import radai_geom
+    terminal = next(c for c in E.CONSTRUCOES if c.get("cod") == "cauda_equina")
+    fn = terminal["funcao"]
+    espia = Mock(return_value={})
+    try:
+        terminal["funcao"] = espia
+        E._rodar_construcoes(
+            {"spinal_cord": np.ones((4, 4, 4), bool),
+             "vertebrae_L2": np.ones((4, 4, 4), bool)},
+            "no_fim", radai_geom.Grade((1.0, 1.0, 1.0)), None, False,
+            {"construcoes": {}, "observacoes": {}}, None,
+            so_cods={"cauda_equina"})
+    finally:
+        terminal["funcao"] = fn
+    checar(u"Cauda e declarada, mas nunca executada na fase inicial das construcoes",
+           espia.call_count == 0, str(espia.call_count))
     checar(u"todo momento do registro esta na ordem",
            all(c["momento"] in E.MOMENTOS_DAS_CONSTRUCOES
                for c in E.CONSTRUCOES))
@@ -5304,8 +5324,11 @@ def teste_o_fast_grava_so_o_oar_fast():
                "fast" not in [c["cod"] for c in RS.CONJUNTOS]
                and "fast" in RS.POR_COD)
         sd2, r2, l2, dest2 = _rodar(base, serie)
-        esperado = set(r2["estruturas"]) - {"Bag_Bowel_OAR_ai"}
-        checar(u"o conteudo e o do RadAI_STUDY menos a Bag_Bowel_OAR",
+        retiradas = {E.nome_clinico(k) for k in (
+            "bag_bowel_oar", "anus", "Skin", "ChestWall_L", "ChestWall_R",
+            "ribs_left", "ribs_right", "costal_cartilages")}
+        esperado = set(r2["estruturas"]) - retiradas
+        checar(u"o conteudo FAST exclui bag, anus, pele, paredes, costelas e cartilagem",
                set(r["estruturas"]) == esperado,
                u"so no FAST: %s | faltam: %s" % (
                    sorted(set(r["estruturas"]) - esperado),
@@ -6198,16 +6221,26 @@ def teste_o_oar_sai_igual_ao_caminho_de_antes():
         pedido.clear()
         E._renumerar_pelo_plano = lambda ds, numeros: 0
         E.build_rtstruct = _espia
+        bloqueada = None
         try:
             _sd2, r2, _l2, _d2 = _rodar(base, serie)
+        except RuntimeError as erro:
+            if "o RTSTRUCT nao preservou o acabamento terminal na rasterizacao" not in str(erro):
+                raise
+            bloqueada = str(erro)
         finally:
             E._renumerar_pelo_plano = velho_num
             E.build_rtstruct = velho
-        _df, dif2, _a, _b = _comparar(r2)
-        checar(u"ISCA: sem o numero do plano, o OAR sai com outros numeros de "
-               u"ROI e a comparacao reprova",
-               any(u"ROINumber" in d or u"ObservationNumber" in d
-                   for d in dif2), u"; ".join(dif2[:3]))
+        if bloqueada:
+            checar(u"ISCA: sem renumeracao, a guarda terminal bloqueia o DICOM inconsistente",
+                   "o RTSTRUCT nao preservou o acabamento terminal na rasterizacao" in bloqueada,
+                   bloqueada)
+        else:
+            _df, dif2, _a, _b = _comparar(r2)
+            checar(u"ISCA: sem o numero do plano, o OAR sai com outros numeros de "
+                   u"ROI e a comparacao reprova",
+                   any(u"ROINumber" in d or u"ObservationNumber" in d
+                        for d in dif2), u"; ".join(dif2[:3]))
     finally:
         E.build_rtstruct = velho
         shutil.rmtree(base, ignore_errors=True)

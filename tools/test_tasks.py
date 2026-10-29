@@ -1611,9 +1611,16 @@ def teste_os_modos_e_os_protocolos_da_v83():
     checar("FAST sem torax e sem coracao (ou nao medido): so a base",
            F({"abdome"}, 20.0, "CT", achados=achados) == ("total_v3",)
            and F({"pelve"}, None, "CT", achados=achados) == ("total_v3",))
-    checar("FAST no cranio: so a base",
+    checar("FAST no cranio: a base e as glandulas para olhos e vias opticas",
            F({"cabeca_pescoco"}, None, "CT", achados=achados)
-           == ("total_v3",))
+           == ("total_v3", "head_glands_cavities")
+           and F({"cranio"}, None, "CT", achados=achados)
+           == ("total_v3", "head_glands_cavities"))
+    mistas = F({"cranio", "cabeca_pescoco", "torax"}, 700.0, "CT",
+               achados=achados)
+    checar("FAST misto preserva as tasks do torax e pede as glandulas uma vez",
+           mistas == ("total_v3", "head_glands_cavities", "trunk_cavities",
+                      "breasts", "pleural_pericard_effusion"))
     checar("FAST na RM: so a total_mr",
            F({"torax"}, 700.0, "MR", achados=achados) == ("total_mr",))
     checar("o FAST esta CONTIDO no AUTO do torax (nada que o AUTO nao "

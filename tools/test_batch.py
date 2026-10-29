@@ -1320,9 +1320,10 @@ def teste_o_modo_da_tela_decide_e_nao_a_lista_do_config():
     checar(u"FAST sem torax, com coracao >= 100 cm3: a `trunk_cavities`",
            tuple(dep("fast", ("abdome",), 150.0, "CT")) == ("trunk_cavities",)
            and tuple(dep("fast", ("abdome",), 50.0, "CT")) == ())
-    checar(u"FAST na pelve pura e no cranio: so a base",
+    checar(u"FAST na pelve pura: so a base; na cabeca, glandulas e vias opticas",
            tuple(dep("fast", ("pelve",), None, "CT")) == ()
-           and tuple(dep("fast", ("cabeca_pescoco",), None, "CT")) == ())
+           and tuple(dep("fast", ("cabeca_pescoco",), None, "CT"))
+           == ("head_glands_cavities",))
     checar(u"AUTO na pelve: a `trunk_cavities` (a Bag_Bowel, spec 1.3)",
            tuple(dep("auto", ("pelve",), None, "CT")) == ("trunk_cavities",))
     checar(u"AUTO no torax: a tabela por topografia (a do vigia)",
@@ -6850,6 +6851,57 @@ def teste_a_previa_e_as_estruturas_novas_do_oar():
            str(sorted(todas))[:200])
 
 
+def teste_o_fast_de_cranio_tem_as_fontes_e_entrega_minima():
+    secao(u"v8.9: FAST cranio com vias opticas, tronco e quiasma")
+    import radai_modes as md
+    import radai_sets as rs
+    for regiao in ("cranio", "cabeca_pescoco"):
+        mot, origem = L.motores_da_serie(
+            {"modo": "fast", "modalidade": "CT"}, regioes=(regiao,))
+        checar(u"FAST %s liga apenas o cranio_ct" % regiao,
+               origem == "fast" and mot.get("cranio_ct") is True
+               and not any(v for k, v in mot.items() if k != "cranio_ct"),
+               str(mot))
+    for mod, regioes in (("MR", ("cranio",)), ("CT", ("torax",)),
+                         ("CT", ())):
+        mot, _o = L.motores_da_serie(
+            {"modo": "fast", "modalidade": mod}, regioes=regioes)
+        checar(u"FAST %s/%s nao arrasta motor de cranio ou comparacao"
+               % (mod, regioes), not any(mot.values()), str(mot))
+    antiga = md.MOTORES_DO_AUTO_POR_REGIAO["cranio"]
+    cfg = dict(L._CFG)
+    try:
+        md.MOTORES_DO_AUTO_POR_REGIAO["cranio"] = ("cranio_ct", "mse")
+        L._CFG.update(incluir_moose=1, incluir_nv=1, incluir_hnlnl=1)
+        mot, _o = L.motores_da_serie(
+            {"modo": "fast", "modalidade": "CT"}, incluir_nv=True,
+            regioes=("cranio",))
+        checar(u"isca: ampliar o AUTO ou ligar chaves antigas nao liga MOOSE no FAST",
+               mot.get("cranio_ct") is True and not any(
+                   mot.get(k) for k in ("nv", "cads", "mse", "hnlnl")), str(mot))
+    finally:
+        md.MOTORES_DO_AUTO_POR_REGIAO["cranio"] = antiga
+        L._CFG.clear()
+        L._CFG.update(cfg)
+    prev = L.previa_da_entrega({"modo": "fast", "modalidade": "CT"})
+    chaves = {e["chave"] for e in prev["oar"]["estruturas"]}
+    opticas = {"eye_left", "eye_right", "eye_lens_left", "eye_lens_right",
+               "optic_nerve_left", "optic_nerve_right", "brain_brainstem",
+               "optic_chiasm"}
+    checar(u"a previa FAST anuncia olhos, cristalinos, nervos, tronco e quiasma",
+           opticas <= chaves, str(sorted(opticas - chaves)))
+    fora = {"Skin", "ChestWall_L", "ChestWall_R", "ribs_left", "ribs_right",
+            "costal_cartilages", "bag_bowel_oar", "anus"}
+    checar(u"a previa FAST nao anuncia pele, parede, costelas, cartilagem ou bag",
+           not (chaves & fora), str(sorted(chaves & fora)))
+    checar(u"AUTO e STUDY conservam as estruturas retiradas apenas do FAST",
+           (fora - {"bag_bowel_oar", "anus"}) <= rs.PERMITIDOS_NO_OAR
+           and not (fora & rs.PERMITIDOS_NO_OAR_FAST))
+    checar(u"a CaudaEquina pertence ao STUDY e ao FAST",
+           "cauda_equina" in rs.PERMITIDOS_NO_OAR
+           and "cauda_equina" in rs.PERMITIDOS_NO_OAR_FAST)
+
+
 def main():
     print("test_batch | entrada do caso: .zip do portal e escolha da serie")
     for t in (teste_zip_extrai_o_que_e_imagem,
@@ -6934,7 +6986,8 @@ def main():
               teste_a_linha_cabe_e_fala_com_o_leitor_de_tela,
               teste_o_registro_de_casos_fica_isolado,
               teste_o_marcador_so_com_rtstruct_no_disco,
-              teste_a_previa_e_as_estruturas_novas_do_oar):
+              teste_a_previa_e_as_estruturas_novas_do_oar,
+              teste_o_fast_de_cranio_tem_as_fontes_e_entrega_minima):
         try:
             t()
         except Exception as e:

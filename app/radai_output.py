@@ -370,7 +370,7 @@ class Saida(object):
                          u"(so vao ao FULL, e o FAST nao grava FULL)"
                          % len(cervicais))
             return self._oar_fast(cruas, volume_hu=volume_hu, cads=cads,
-                                  torax=torax)
+                                  torax=torax, extras=extras)
         _unioes_proprias = []
         if protocolo:
             permitidos, _tiradas, _unioes_proprias = permitidos_do_protocolo(
@@ -683,7 +683,7 @@ class Saida(object):
             raise RuntimeError(u"conjunto entregue (FULL/OAR) nao saiu: %s"
                                % motivo[:300]) from e
 
-    def _oar_fast(self, cruas, volume_hu=None, cads=None, torax=None):
+    def _oar_fast(self, cruas, volume_hu=None, cads=None, torax=None, extras=None):
         import radai_sets
         t0 = time.time()
         reg = radai_sets.POR_COD["fast"]
@@ -698,6 +698,11 @@ class Saida(object):
                     u"serie (tasks: %s)" % u", ".join(sorted(cruas or {})))
             masks, origem = engine.curar(vocab, {"cads": dict(cads or {})},
                                          log=self._log)
+            _extra_fast = {k: dict((n, v) for n, v in dict((extras or {}).get(k) or {}).items()
+                                  if n in {"brain_brainstem", "optic_chiasm"})
+                           for k in ("orgaos", "origem", "observacoes")}
+            masks, origem = _juntar_orgaos_dos_motores(
+                masks, origem, _extra_fast, self.log)
             if any(str(k).startswith("parotid_gland_") for k in masks):
                 self.log(u"OAR_Fast: sem parotida — a do OAR vem so dos "
                          u"niveis cervicais, que o FAST nao roda; a do "

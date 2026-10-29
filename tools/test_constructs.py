@@ -1126,9 +1126,26 @@ def _mandibula_com_ramos(coronoide_alto=False):
     return mand
 
 
+def _margem_da_atm_esperada(cond, g):
+    sp = tuple(float(v) for v in g.spacing)
+    saida = np.zeros_like(cond, dtype=bool)
+    alc = [int(np.floor(3.0 / v)) for v in sp]
+    for dz in range(alc[0] + 1):
+        for dy in range(-alc[1], alc[1] + 1):
+            for dx in range(-alc[2], alc[2] + 1):
+                if sum((d * s) ** 2 for d, s in zip((dz, dy, dx), sp)) > 9.0 + 1e-9:
+                    continue
+                de, para = [], []
+                for n, d in zip(cond.shape, (dz, dy, dx)):
+                    de.append(slice(max(0, -d), min(n, n - d)))
+                    para.append(slice(max(0, d), min(n, n + d)))
+                saida[tuple(para)] |= cond[tuple(de)]
+    return saida
+
+
 def teste_as_atms():
     secao(u"v8.7: TMJ_L_ai e TMJ_R_ai, o condilo do corte em que o ramo se "
-          u"divide ao topo, com 3 mm em 3D")
+          u"divide ao topo, com 3 mm axiais e craniais, sem margem caudal")
     g = G.Grade((1.0, 1.0, 1.0))
     mand = _mandibula_com_ramos()
     linhas = []
@@ -1145,8 +1162,8 @@ def teste_as_atms():
                u"topo (55)" % chave, not (cond & ~atm).any())
         checar(u"[%s]   e nada do coronoide" % chave,
                not (atm & coro).any(), u"%d voxels" % int((atm & coro).sum()))
-        esperado = G.expandir(cond, 3.0, g)
-        checar(u"[%s]   com 3 mm de margem em 3D (nem mais, nem menos)"
+        esperado = _margem_da_atm_esperada(cond, g)
+        checar(u"[%s]   com 3 mm axiais/craniais e nenhuma margem caudal"
                % chave, np.array_equal(atm, esperado),
                u"%d de diferenca" % int((atm ^ esperado).sum()))
         checar(u"[%s]   e so do proprio lado" % chave,
@@ -1172,6 +1189,66 @@ def teste_as_atms():
     cn = C.atms({"mandible": sem_divisao}, g).get("tmj_left")
     checar(u"sem o ramo dividido em dois contornos, nao sai, e diz por que",
            not cn and any(u"divide" in f for f in cn.faltou), str(cn.faltou))
+
+
+def teste_a_atm_nao_expande_para_caudal():
+    secao(u"ATM: margem unilateral, marco inferior e acabamento terminal")
+    import SimpleITK as sitk
+    from radai_skin import _de_canonico, _para_canonico
+    mand = _mandibula_com_ramos()
+    cranio = _cx(56, 60, 20, 66, 18, 80)
+    img = sitk.Image([100, 80, 60], sitk.sitkUInt8)
+    ang = np.radians(17.0)
+    img.SetDirection((1, 0, 0, 0, np.cos(ang), -np.sin(ang),
+                      0, np.sin(ang), np.cos(ang)))
+    grades = ((u"HFS", G.Grade((1, 1, 1))),
+              (u"FFS", G.Grade((1, 1, 1), ("inf", "post", "dir"))),
+              (u"permutada", G.Grade((1, 1, 1), ("esq", "post", "sup"))),
+              (u"obliqua", G.Grade.de_sitk(img)),
+              (u"anisotropica", G.Grade((2.0, 1.25, 0.75))))
+    for rotulo, g in grades:
+        mn = _de_canonico(mand, g)
+        entrada = mn.copy()
+        cs = C.atms({"mandible": mn, "skull": _de_canonico(cranio, g)}, g)
+        gc = C._grade_canonica(g)
+        for chave, x0, x1 in (("tmj_left", 70, 76), ("tmj_right", 24, 30)):
+            c = cs.get(chave)
+            a = _para_canonico(c.mascara, g) if c else None
+            esperado = _margem_da_atm_esperada(_cx(44, 56, 40, 46, x0, x1), gc)
+            checar(u"%s/%s: margem exata axial/cranial de ate 3 mm"
+                   % (rotulo, chave), a is not None and np.array_equal(a, esperado))
+            limite = (c.extras or {}).get("limite_inferior_canonico") if c else None
+            checar(u"%s/%s: guarda marco44 e nao ocupa corte unico43"
+                   % (rotulo, chave), limite == 44 and a is not None and not a[:44].any())
+            acabamento = getattr(C, "limitar_atm_caudal", None)
+            checar(u"%s/%s: acabamento terminal disponivel" % (rotulo, chave),
+                   callable(acabamento))
+            if not callable(acabamento) or a is None or limite is None:
+                continue
+            contaminada = a.copy()
+            contaminada[41:44, 40:46, x0:x1] = True
+            nativa = _de_canonico(contaminada, g)
+            copia = nativa.copy()
+            final = _para_canonico(acabamento(nativa, g, limite), g)
+            checar(u"%s/%s: acabamento tira todo voxel caudal sem mudar o resto"
+                   % (rotulo, chave), np.array_equal(final, esperado))
+            checar(u"%s/%s: acabamento nao altera entrada" % (rotulo, chave),
+                   np.array_equal(nativa, copia))
+        checar(u"%s: mandibula original intacta" % rotulo, np.array_equal(mn, entrada))
+    exp = getattr(C, "_expandir_atm_sem_caudal", None)
+    checar(u"a expansao unilateral possui helper proprio", callable(exp))
+    if callable(exp):
+        cond = np.zeros((16, 24, 24), bool)
+        cond[4, 6, 6] = cond[10, 16, 16] = True
+        g = G.Grade((1, 1, 1))
+        a = exp(cond, g)
+        checar(u"nem a parte cranial dilata para cortes inferiores locais",
+               not a[9, 16, 16] and a[13, 16, 16] and a[10, 16, 19]
+               and not a[14, 16, 16] and np.array_equal(a, _margem_da_atm_esperada(cond, g)))
+        isca = G.expandir(cond, 3, g)
+        isca[:4] = False
+        checar(u"ISCA: dilatacao isotropica apenas truncada ainda expande localmente para caudal",
+               isca[9, 16, 16] and not a[9, 16, 16])
 
 
 _CRANIO_DA_ATM = (56, 60, 20, 66, 18, 80)
@@ -1231,7 +1308,7 @@ def teste_o_plano_medio_da_atm():
     tl, tr = _da(cs, "tmj_left"), _da(cs, "tmj_right")
     checar(u"mandibulectomia (sobra o ramo esquerdo): a TMJ_L e o condilo "
            u"esquerdo inteiro com 3 mm, como na mandibula inteira",
-           tl is not None and np.array_equal(tl, G.expandir(cond_e, 3.0, g)))
+           tl is not None and np.array_equal(tl, _margem_da_atm_esperada(cond_e, g)))
     checar(u"  e a TMJ_R nao sai, e diz que nao ha mandibula do lado direito",
            tr is None and any(u"TMJ_R" in f and u"sem mandibula" in f
                               for f in cs["tmj_right"].faltou),
@@ -1252,7 +1329,7 @@ def teste_o_plano_medio_da_atm():
                u"girado do proprio lado com 3 mm, e o mesmo que pela caixa"
                % (chave, _GIRO_DA_CABECA),
                a is not None and b is not None and np.array_equal(a, b)
-               and np.array_equal(a, G.expandir(_girada(cond), 3.0, g)))
+               and np.array_equal(a, _margem_da_atm_esperada(_girada(cond), g)))
 
     resto_g = _girada(resto)
     cs = C.atms({"mandible": resto_g, "skull": cranio_g}, g)
@@ -1260,7 +1337,7 @@ def teste_o_plano_medio_da_atm():
     checar(u"cabeca girada e mandibulectomia: a TMJ_L e o condilo esquerdo "
            u"girado com 3 mm, e a TMJ_R nao sai",
            tl is not None and tr is None
-           and np.array_equal(tl, G.expandir(_girada(cond_e), 3.0, g)))
+           and np.array_equal(tl, _margem_da_atm_esperada(_girada(cond_e), g)))
     ci = _atms_pela_caixa({"mandible": resto_g, "skull": cranio_g}, g)
     tli, tri = _da(ci, "tmj_left"), _da(ci, "tmj_right")
     checar(u"ISCA: pela caixa, o condilo esquerdo inteiro sairia como TMJ_R, "
@@ -1413,15 +1490,26 @@ def teste_os_recortes_do_retorno_de_campo():
         b = np.zeros_like(heart)
         b[5, 7 + i // 7, 7 + i % 7] = True
         tecidos[nome] = b
+    preservados = {}
+    for i, nome in enumerate(("sternocleidomastoid_left", "sternocleidomastoid_right",
+                              "platysma_left", "platysma_right")):
+        b = np.zeros_like(heart)
+        b[6, 10, 8 + i] = True
+        preservados[nome] = b
+    tecidos.update(preservados)
     uniao, desc, medida = acab(H.NOME_DA_UNIAO, heart, tecidos, g)
     checar(u"LNL: cada um dos musculos e ossos solicitados fica fora",
-           all(not (uniao & b).any() for b in tecidos.values()))
-    excluidas = np.logical_or.reduce(list(tecidos.values()))
+           all(not (uniao & tecidos[n]).any() for n in H.FORA_DA_UNIAO))
+    checar(u"LNL: ECM e platysma bilaterais nao sao mais descontados",
+           all((uniao & b).any() for b in preservados.values())
+           and not (set(preservados) & set(H.FORA_DA_UNIAO)))
+    excluidas = np.logical_or.reduce([tecidos[n] for n in H.FORA_DA_UNIAO])
     checar(u"LNL: nenhuma outra parte da uniao muda",
            np.array_equal(uniao, heart & ~excluidas))
     checar(u"LNL: mantem aviso clinico e registra todos os recortes",
            u"NAO E OAR NEM CTV" in desc
-           and set(medida["vizinhos"]) == set(H.FORA_DA_UNIAO))
+           and set(medida["vizinhos"]) == set(H.FORA_DA_UNIAO)
+           and u"Mantidas as interseccoes" in desc)
     marcado = H.acabamento_da_uniao_sem_a_clavicula(
         {}, descricao_original=H.descricao_da_uniao() + u" ESTUDO MARCADO.")
     _m, desc_m, _i = marcado(H.NOME_DA_UNIAO, heart, tecidos, g)
@@ -1507,6 +1595,7 @@ def main():
               teste_o_motor_registra_as_construcoes_daqui,
               teste_a_laringe,
               teste_as_atms,
+              teste_a_atm_nao_expande_para_caudal,
               teste_o_plano_medio_da_atm,
               teste_os_pulmoes_somados,
               teste_a_mandibula_cheia,

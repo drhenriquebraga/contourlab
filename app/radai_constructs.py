@@ -1293,8 +1293,9 @@ PIXELS_MINIMOS_DO_CONTORNO_DO_RAMO = 4
 DESCRICAO_DA_ATM = (
     u"TMJ_%s: o condilo da mandibula do lado %s, do corte em que o ramo se "
     u"divide em dois contornos (coronoide a frente, condilo atras) ao topo "
-    u"do condilo, com %g mm de margem em 3D. Derivada da mandibula do FULL: "
-    u"nenhum modelo novo.")
+    u"do condilo, com margem total de %g mm no plano axial e para cranial, "
+    u"sem expansao caudal. Limite inferior antes do primeiro corte caudal "
+    u"de contorno unico. Derivada da mandibula do FULL: nenhum modelo novo.")
 
 
 def _contornos_do_ramo(fatia):
@@ -1337,6 +1338,40 @@ def condilo_do_lado(lado):
         atual = _mais_posterior(cand)
         cond[z] = atual
     return cond, None
+
+
+def _expandir_atm_sem_caudal(cond, grade):
+    from scipy import ndimage
+    m = _bool(cond)
+    saida = np.zeros_like(m)
+    zs = np.flatnonzero(m.any(axis=(1, 2)))
+    if not zs.size:
+        return saida
+    raio = float(ATM_ALEM_DO_CONDILO_MM)
+    sz, sy, sx = (float(v) for v in grade.spacing)
+    ys, xs = np.where(m.any(axis=0))
+    fy, fx = int(np.ceil(raio / sy)), int(np.ceil(raio / sx))
+    y0, y1 = max(0, int(ys.min()) - fy), min(m.shape[1], int(ys.max()) + fy + 1)
+    x0, x1 = max(0, int(xs.min()) - fx), min(m.shape[2], int(xs.max()) + fx + 1)
+    for z in zs:
+        d = ndimage.distance_transform_edt(~m[z, y0:y1, x0:x1],
+                                           sampling=(sy, sx))
+        d *= d
+        for dz in range(int(np.floor(raio / sz)) + 1):
+            if z + dz >= m.shape[0]:
+                break
+            saida[z + dz, y0:y1, x0:x1] |= d <= raio * raio - (dz * sz) ** 2 + 1e-9
+    return saida
+
+
+def limitar_atm_caudal(m, grade, limite_inferior_canonico):
+    from radai_skin import _para_canonico, _de_canonico
+    c = _para_canonico(_bool(m), grade).copy()
+    limite = int(limite_inferior_canonico)
+    if limite < 0 or limite >= c.shape[0]:
+        raise ValueError("limite inferior da ATM fora da grade")
+    c[:limite] = False
+    return _de_canonico(c, grade)
 
 
 ANCORAS_DO_PLANO_MEDIO_DA_ATM = (("skull", u"do cranio"),
@@ -1399,15 +1434,17 @@ def atms(masks, grade, log=None, cru=None):
             fora[chave] = Construcao(chave, None, u"", faltou=[
                 u"TMJ_%s: %s" % (l, pq)])
             continue
-        m = _de_canonico(radai_geom.expandir(cond, ATM_ALEM_DO_CONDILO_MM,
-                                             gc), grade)
+        limite = int(np.flatnonzero(cond.any(axis=(1, 2)))[0])
+        m = _de_canonico(_expandir_atm_sem_caudal(cond, gc), grade)
         n_cortes = int(cond.any(axis=(1, 2)).sum())
         _falar(log, u"TMJ_%s: %.2f cm3 (o condilo em %d corte(s), do que "
-                    u"divide o ramo ao topo, +%g mm)"
+                    u"divide o ramo ao topo, +%g mm axiais/craniais, "
+                    u"sem expansao caudal)"
                % (l, _cm3(m, grade), n_cortes, ATM_ALEM_DO_CONDILO_MM))
         fora[chave] = Construcao(chave, m, DESCRICAO_DA_ATM % (
             l, nome_lado, ATM_ALEM_DO_CONDILO_MM),
-            entrou=[MANDIBULA_DA_ATM] + ([ancora] if ancora else []))
+            entrou=[MANDIBULA_DA_ATM] + ([ancora] if ancora else []),
+            extras={"limite_inferior_canonico": limite})
     return fora
 
 

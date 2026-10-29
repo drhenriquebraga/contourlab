@@ -141,6 +141,22 @@ def motores_do_auto(regioes, modalidade="CT"):
                 fora.append(c)
     return tuple(fora)
 
+
+MOTORES_DO_FAST_POR_REGIAO = {CRANIO: ("cranio_ct",),
+                           CABECA_PESCOCO: ("cranio_ct",)}
+
+
+def motores_do_fast(regioes, modalidade="CT"):
+    if _modalidade(modalidade) != "CT":
+        return ()
+    fora = []
+    for r in (regioes or ()):
+        for c in MOTORES_DO_FAST_POR_REGIAO.get(r, ()):
+            if c not in fora:
+                fora.append(c)
+    return tuple(fora)
+
+
 MOT_POR_COD = dict((m["cod"], m) for m in MOTORES)
 
 
@@ -355,6 +371,8 @@ def normalizar_modo(valor):
 
 
 TASKS_DO_FAST = {
+    CRANIO: ("head_glands_cavities",),
+    CABECA_PESCOCO: ("head_glands_cavities",),
     TORAX: ("trunk_cavities", "breasts", "pleural_pericard_effusion"),
 }
 
@@ -365,8 +383,12 @@ def tasks_do_fast(regioes, coracao_cm3=None, modalidade="CT", permitidas=None,
     regioes = set(regioes or ())
     fora = [base_de(mod)]
     if mod == "CT":
-        extra = (TASKS_DO_FAST.get(TORAX, ()) if TORAX in regioes
-                 else _coracao_fora_do_torax(regioes, coracao_cm3, mod))
+        extra = []
+        for r in TOPOGRAFIAS:
+            if r in regioes:
+                extra.extend(TASKS_DO_FAST.get(r, ()))
+        if TORAX not in regioes:
+            extra.extend(_coracao_fora_do_torax(regioes, coracao_cm3, mod))
         for t in extra:
             if t and t not in fora:
                 fora.append(t)

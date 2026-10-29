@@ -673,7 +673,11 @@ def motores_da_serie(serie, incluir_nv=None, regioes=()):
     e = escolha_da_serie(serie)
     if e["modo"] == _md().MODO_PERSO:
         return motores_do_perso(e), e["modo"]
-    return dict((m, False) for m in MOTORES_DO_LOTE), e["modo"]
+    fora = dict((m, False) for m in MOTORES_DO_LOTE)
+    if e["modo"] == _md().MODO_FAST:
+        for c in _md().motores_do_fast(regioes, e["modalidade"]):
+            fora[c] = True
+    return fora, e["modo"]
 
 
 def ts_cru_pedido(serie):
@@ -1369,8 +1373,7 @@ def so_com_o_pescoco(k, rodam, engine):
 
 def estruturas_dos_motores_no_oar(modo, modalidade, motores, oar_fora=()):
     md = _md()
-    if md.normalizar_modo(modo) == md.MODO_FAST or \
-            md._modalidade(modalidade) != "CT":
+    if md._modalidade(modalidade) != "CT":
         return []
     try:
         import engine
@@ -1379,12 +1382,15 @@ def estruturas_dos_motores_no_oar(modo, modalidade, motores, oar_fora=()):
         no_oar = _rmf.estruturas_no_oar()
     except Exception:
         return []
+    permitidos = (_rs.PERMITIDOS_NO_OAR_FAST
+                  if md.normalizar_modo(modo) == md.MODO_FAST
+                  else _rs.PERMITIDOS_NO_OAR)
     fora = []
     for cod in md.MOTORES_NO_FULL:
         if not (motores or {}).get(cod):
             continue
         for k in no_oar.get(cod, ()):
-            if k not in _rs.PERMITIDOS_NO_OAR or k in set(oar_fora or ()):
+            if k not in permitidos or k in set(oar_fora or ()):
                 continue
             try:
                 nome = engine.nome_clinico(k)
@@ -1599,7 +1605,7 @@ def previa_da_entrega(serie):
     tasks = list(tasks)
     possiveis = []
     if e["modo"] == md.MODO_FAST:
-        possiveis = list(md.tasks_do_fast(("torax",), None, mod,
+        possiveis = list(md.tasks_do_fast(md.TOPOGRAFIAS, None, mod,
                                           permitidas=permitidas,
                                           achados=achados,
                                           catalogo=cat)[1:])
@@ -1612,6 +1618,9 @@ def previa_da_entrega(serie):
     if e["modo"] == md.MODO_AUTO and mod == "CT":
         mot = dict(mot, hnlnl=True)
         for _c in md.motores_do_auto(md.TOPOGRAFIAS, mod):
+            mot[_c] = True
+    elif e["modo"] == md.MODO_FAST:
+        for _c in md.motores_do_fast(md.TOPOGRAFIAS, mod):
             mot[_c] = True
     arquivos = arquivos_da_escolha(s, todas, mot)
     so_do_estudo = set(tasks_so_do_estudo(s))
@@ -3477,7 +3486,7 @@ def _uma_serie(s, incluir_nv, tasks, device, python_exe,
                    {"perso": "pela escolha da serie, no PERSONALIZADO",
                     "auto": "no AUTO os niveis cervicais pelo pescoco e o "
                             "encefalo em TC pela anatomia",
-                    "fast": "o FAST nao roda motor nenhum",
+                     "fast": "encefalo em TC pela anatomia; sem motores de comparacao",
                     "lista": "a lista do chamador nao pede motor"}.get(
                         _mot_origem, _mot_origem)))
             if (_origem in (_md.MODO_AUTO, _md.MODO_FAST)
@@ -3542,10 +3551,13 @@ def _uma_serie(s, incluir_nv, tasks, device, python_exe,
                         "outros conjuntos nao foram afetados" % str(e)[:140])
 
         extras_da_vez = None
-        _motores_full = [c for c in _md.MOTORES_NO_FULL if _mot.get(c)]
-        if _motores_full and _origem != _md.MODO_FAST:
+        _motores_full = [c for c in _md.MOTORES_NO_FULL if _mot.get(c)
+                         and (_origem != _md.MODO_FAST or c in
+                              _md.motores_do_fast(_anat["regioes"], modalidade))]
+        if _motores_full:
             try:
-                _passo("motores do FULL", rotulo)
+                _passo("encefalo em TC" if _origem == _md.MODO_FAST
+                       else "motores do FULL", rotulo)
                 import radai_motores_full as _rmf
                 extras_da_vez = _rmf.motores_na_serie(
                     ref, cruas, _motores_full, device=dev, log=log,

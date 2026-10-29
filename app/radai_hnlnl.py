@@ -45,8 +45,7 @@ LADO_DA_CLAVICULA = {"clavicula_left": u"esquerda",
                      "clavicula_right": u"direita"}
 
 FORA_DA_UNIAO = (
-    "sternocleidomastoid_left", "sternocleidomastoid_right",
-    "platysma_left", "platysma_right", "mandible",
+    "mandible",
     "anterior_scalene_left", "anterior_scalene_right",
     "middle_scalene_left", "middle_scalene_right",
     "posterior_scalene_left", "posterior_scalene_right",
@@ -99,9 +98,10 @@ def acabamento_da_uniao_sem_a_clavicula(ivb_crus, descricao_original=None):
         import radai_names
         descricao = ((descricao_original or descricao_da_uniao(
             nome == NOME_DA_UNIAO))
-                     + u" Sem as interseccoes com esternocleidomastoideos, "
-                     u"platismas, mandibula, escalenos anteriores, medios e "
-                     u"posteriores, claviculas e hioide das mascaras finais.")
+                     + u" Sem as interseccoes com mandibula, escalenos "
+                     u"anteriores, medios e posteriores, claviculas e hioide "
+                     u"das mascaras finais. Mantidas as interseccoes com "
+                     u"esternocleidomastoideos e platismas.")
         fora = []
         for chave in sorted(masks or {}):
             if radai_names.casa_prefixo(chave, FORA_DA_UNIAO) is None:

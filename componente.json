@@ -66,6 +66,7 @@
     "test_modelos_v84.py",
     "test_moose.py",
     "test_motor2.py",
+    "test_motor_v89.py",
     "test_names.py",
     "test_nomes_no_tps.py",
     "test_nv_segment.py",

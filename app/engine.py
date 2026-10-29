@@ -1644,8 +1644,11 @@ def _motivo_do_log(linhas, prefixo, padrao):
 
 
 def _construir_pele_e_parede(masks, grade, volume_hu=None, log=None,
-                             torax=None, cru=None, externo=None):
+                             torax=None, cru=None, externo=None, saidas=None):
     fora = _SaidaComFaltou()
+    saidas = {"Skin", "ChestWall_L", "ChestWall_R"} if saidas is None else set(saidas)
+    if not saidas:
+        return fora
     if grade is None or volume_hu is None:
         fora.faltou.append(u"Skin, ChestWall_L, ChestWall_R: sem a grade ou "
                            u"sem o volume da serie")
@@ -1675,9 +1678,12 @@ def _construir_pele_e_parede(masks, grade, volume_hu=None, log=None,
             return fora
         externo = radai_skin.corpo_da_pele(externo, masks, grade,
                                            volume_hu=volume_hu, log=log)
-        casca = radai_skin.pele(externo, grade, log=log)
-        if casca is not None and casca.any():
-            fora["Skin"] = casca
+        if "Skin" in saidas:
+            casca = radai_skin.pele(externo, grade, log=log)
+            if casca is not None and casca.any():
+                fora["Skin"] = casca
+        if not ({"ChestWall_L", "ChestWall_R"} & saidas):
+            return fora
         _log, _linhas = _log_que_guarda(log)
         paredes = radai_skin.parede_toracica(
             vista, externo, grade, log=_log, torax=torax, cru=cru)
@@ -1700,7 +1706,8 @@ def _construir_pele_e_parede(masks, grade, volume_hu=None, log=None,
             except Exception:
                 desc = None
         for nome, m in sorted(paredes.items()):
-            fora[nome] = (m, desc) if desc else m
+            if nome in saidas:
+                fora[nome] = (m, desc) if desc else m
         if not paredes:
             fora.faltou.append(u"ChestWall_L, ChestWall_R: %s" % _motivo_do_log(
                 _linhas, u"parede toracica", u"a parede nao saiu nesta serie"))
@@ -2283,11 +2290,15 @@ CONSTRUCOES.append(
 
 def _saida_das_construcoes(cs):
     fora = _SaidaComFaltou()
+    fora.especificacoes = {}
     for chave, c in sorted((cs or {}).items()):
         if c is None:
             continue
         if bool(c):
             fora[chave] = (c.mascara, u"%s" % (c.descricao or u""))
+            if "limite_inferior_canonico" in (c.extras or {}):
+                fora.especificacoes[chave] = {
+                    "limite_inferior_canonico": int(c.extras["limite_inferior_canonico"])}
         fora.faltou.extend(u"%s" % f for f in (c.faltou or ()) if f)
     return fora
 
@@ -2408,12 +2419,12 @@ CONSTRUCOES[_ONDE_ENTRAM:_ONDE_ENTRAM] = [
              "suavizar_mm": 0.0, "recortar_por": (),
              "contem": ("mandible", "skull"),
              "descricao": u"TMJ_L: o condilo esquerdo da mandibula com 3 mm "
-                          u"em 3D (recorte do FULL)."},
+                          u"axiais e craniais, sem expansao caudal (recorte do FULL)."},
          "tmj_right": {
              "suavizar_mm": 0.0, "recortar_por": (),
              "contem": ("mandible", "skull"),
              "descricao": u"TMJ_R: o condilo direito da mandibula com 3 mm "
-                          u"em 3D (recorte do FULL)."}}},
+                          u"axiais e craniais, sem expansao caudal (recorte do FULL)."}}},
     {"cod": "mandibula", "funcao": _construir_mandibula,
      "momento": "no_fim", "exige_hu": False, "exige": ("mandible",),
      "saidas": {
@@ -2442,6 +2453,128 @@ CONSTRUCOES[_ONDE_ENTRAM:_ONDE_ENTRAM] = [
              "descricao": u"Lungs: a soma dos pulmoes (recorte do FULL)."}}}]
 del _ONDE_ENTRAM
 
+
+
+CHAVE_CAUDA_EQUINA = "cauda_equina"
+DESCRICAO_CAUDA_EQUINA = (
+    u"CaudaEquina: porcao da SpinalCord final do primeiro corte cranial de L2 "
+    u"para caudal, incluindo esse corte. Particao por marco anatomico, sem "
+    u"novo modelo ou voxels acrescentados; revisao medica obrigatoria.")
+
+
+def _mascara_terminal(m, forma=None):
+    if m is None:
+        return None
+    a = np.asarray(m)
+    if a.ndim != 3 or (forma is not None and a.shape != tuple(forma)):
+        return None
+    if a.dtype != bool and not np.isin(a, (0, 1)).all():
+        return None
+    return a.astype(bool, copy=False)
+
+
+def partir_medula_em_l2(m, l2, grade):
+    m = _mascara_terminal(m)
+    l2 = _mascara_terminal(l2, None if m is None else m.shape)
+    if grade is None or m is None or not m.any() or l2 is None or not l2.any():
+        return None
+    eixo, sinal = grade.eixo_sinal("inf")
+    pos = np.flatnonzero(l2.any(axis=tuple(i for i in range(3) if i != eixo)))
+    corte = int(pos.min() if sinal > 0 else pos.max())
+    indices = np.arange(m.shape[eixo])
+    caudal = indices >= corte if sinal > 0 else indices <= corte
+    forma = [1, 1, 1]
+    forma[eixo] = m.shape[eixo]
+    cauda = m & caudal.reshape(forma)
+    cord = m & ~caudal.reshape(forma)
+    return cord, cauda, {"eixo": eixo, "sinal": sinal, "corte": corte,
+                         "distancia_na_grade_mm": corte * grade.spacing[eixo]}
+
+
+def _construir_cauda_equina(masks, grade, **_kw):
+    cord = _nomes.achar(masks, "spinal_cord")
+    l2 = _nomes.achar(masks, "vertebrae_L2")
+    partes = partir_medula_em_l2(masks.get(cord), masks.get(l2), grade)
+    return {} if partes is None else {CHAVE_CAUDA_EQUINA: partes[1]}
+
+
+CONSTRUCOES.append({
+    "cod": CHAVE_CAUDA_EQUINA, "funcao": _construir_cauda_equina,
+    "momento": "no_fim", "terminal": True, "exige_hu": False,
+    "exige": ("spinal_cord", "vertebrae_L2"),
+    "saidas": {CHAVE_CAUDA_EQUINA: {
+        "suavizar_mm": 0.0, "recortar_por": (), "contem": (),
+        "descricao": DESCRICAO_CAUDA_EQUINA}}})
+
+
+def insumos_dos_terminais(alvo):
+    alvo = set(alvo or ())
+    fora = set()
+    if "great_arteries" in alvo:
+        fora.update((_nomes.CHAVE_DO_CORACAO_DO_MODELO, "heart"))
+    if {"spinal_cord", CHAVE_CAUDA_EQUINA} & alvo:
+        fora.update(("spinal_cord", "vertebrae_L2"))
+    if "heart" in alvo:
+        fora.add("costal_cartilages")
+    return fora
+
+
+def _acrescentar_observacao_terminal(observacoes, chave, texto):
+    antes = str(observacoes.get(chave) or "").strip()
+    if texto not in antes:
+        observacoes[chave] = (antes + " " if antes else "") + texto
+
+
+def acabamentos_terminais(masks, grade, construcoes=None, origem=None,
+                          observacoes=None, log=None):
+    ctx = {}
+    construcoes = {} if construcoes is None else construcoes
+    origem = {} if origem is None else origem
+    observacoes = {} if observacoes is None else observacoes
+    hm = next((k for k in masks if _nomes.canonico(k) ==
+               _nomes.CHAVE_DO_CORACAO_DO_MODELO), None)
+    heart = "heart" if "heart" in masks else None
+    modelo = _mascara_terminal(masks.get(hm))
+    cor = _mascara_terminal(masks.get(heart), None if modelo is None else modelo.shape)
+    if modelo is not None and modelo.any() and cor is not None and cor.any():
+        ga = _mascara_terminal(masks.get("great_arteries"), modelo.shape)
+        antes = np.zeros_like(modelo) if ga is None else ga.copy()
+        masks["great_arteries"] = antes | (modelo & ~cor)
+        ctx["arterias"] = {"antes": antes, "modelo": modelo, "modelo_chave": hm,
+                            "coracao": cor, "coracao_chave": heart}
+        _acrescentar_observacao_terminal(observacoes, "great_arteries",
+            u"GreatArteries: composto dos vasos acrescido de Heart_Model menos "
+            u"Heart final; classificacao por diferenca de mascaras, nao uma "
+            u"segmentacao especifica da arteria pulmonar.")
+    elif log and (hm is not None or "great_arteries" in masks):
+        log(u"GreatArteries: sem Heart_Model e Heart final validos na mesma "
+            u"grade; residuo cardiaco nao acrescentado")
+    chave = _nomes.achar(masks, "spinal_cord")
+    l2 = _nomes.achar(masks, "vertebrae_L2")
+    partes = partir_medula_em_l2(masks.get(chave), masks.get(l2), grade)
+    if partes is not None:
+        cord, cauda, info = partes
+        ctx["medula"] = {"antes": _bool_seguro(masks[chave]).copy(),
+                          "chave": chave, "l2": _bool_seguro(masks[l2]),
+                          "l2_chave": l2, "plano": info}
+        masks[chave], masks[CHAVE_CAUDA_EQUINA] = cord, cauda
+        origem[CHAVE_CAUDA_EQUINA] = "derivada"
+        construcoes[CHAVE_CAUDA_EQUINA] = dict(
+            CONSTRUCOES_POR_SAIDA()[CHAVE_CAUDA_EQUINA])
+        observacoes[CHAVE_CAUDA_EQUINA] = DESCRICAO_CAUDA_EQUINA
+        _acrescentar_observacao_terminal(observacoes, chave,
+            u"SpinalCord: porcao cranial ao primeiro corte de L2; o corte "
+            u"de L2 e a porcao caudal ficam na CaudaEquina.")
+    elif chave is not None and log:
+        log(u"SpinalCord: sem L2 valida na mesma grade; mantida inteira, "
+            u"sem CaudaEquina derivada")
+    import radai_constructs as _rc
+    for k in ("tmj_left", "tmj_right"):
+        limite = (construcoes.get(k) or {}).get("limite_inferior_canonico")
+        if k in masks and limite is not None:
+            masks[k] = _rc.limitar_atm_caudal(masks[k], grade, limite)
+            ctx.setdefault("atms", {})[k] = int(limite)
+    return ctx
 
 
 ORDEM_DO_FULL = (
@@ -2670,11 +2803,13 @@ def _frase_da_saida(faltou, nome):
 
 
 def _rodar_construcoes(fora, momento, grade, volume_hu, hu_ok, meta, log,
-                       torax=None, cru=None, ctx=None, so_cods=None):
+                       torax=None, cru=None, ctx=None, so_cods=None, alvo=None):
     ctx = {} if ctx is None else ctx
     meta.setdefault("faltou", {})
     for c in CONSTRUCOES:
         if c.get("momento") != momento:
+            continue
+        if c.get("terminal"):
             continue
         cod = c.get("cod", "?")
         if so_cods is not None and cod not in so_cods:
@@ -2716,6 +2851,9 @@ def _rodar_construcoes(fora, momento, grade, volume_hu, hu_ok, meta, log,
                 if _tudo or "construidas" in _ps:
                     _kw["construidas"] = dict(
                         (k, fora[k]) for k in meta["construcoes"] if k in fora)
+                if "saidas" in _ps:
+                    _kw["saidas"] = (None if alvo is None else
+                                     set(c.get("saidas") or {}) & set(alvo))
             except (TypeError, ValueError):
                 _kw = {"volume_hu": volume_hu, "log": log}
             saida = c["funcao"](_Sobreposto(fora), grade, **_kw)
@@ -2750,6 +2888,7 @@ def _rodar_construcoes(fora, momento, grade, volume_hu, hu_ok, meta, log,
             fora[nome] = m
             entraram.append(nome)
             spec = dict(declaradas.get(nome) or {})
+            spec.update((getattr(saida, "especificacoes", None) or {}).get(nome) or {})
             if desc_da_serie is not None:
                 spec["descricao"] = desc_da_serie
             _rm = (getattr(saida, "reune_mascaras", None) or {}).get(nome)
@@ -3002,7 +3141,7 @@ def preparar_full(masks, grade=None, log=None, volume_hu=None, modalidade=None,
         if etapa == "construcoes":
             _rodar_construcoes(fora, valor, grade, volume_hu, _hu_ok, meta,
                                log, torax=torax, cru=cru, ctx=ctx,
-                               so_cods=_so_cods)
+                                so_cods=_so_cods, alvo=_alvo)
         else:
             passos[etapa]()
 
@@ -3020,11 +3159,13 @@ def preparar_full(masks, grade=None, log=None, volume_hu=None, modalidade=None,
     return fora, meta
 
 
-def insumos_da_particao(alvo):
+def insumos_da_particao(alvo, esqueleto=True):
     alvo = set(alvo or ())
     partes = partes_de_composto()
     fora = set()
-    for membros in GRUPOS_DISJUNTOS.values():
+    for nome_grupo, membros in GRUPOS_DISJUNTOS.items():
+        if nome_grupo == "esqueleto_toracico" and not esqueleto:
+            continue
         membros = list(membros)
         if set(membros) & alvo:
             fora.update(m for m in membros
@@ -3034,11 +3175,19 @@ def insumos_da_particao(alvo):
 
 def _filtrar_para(fora, alvo, meta, diz=None):
     _deriv = insumos_das_derivadas()
-    _grupo = insumos_da_particao(alvo)
+    _heart = _mascara_terminal(fora.get("heart"))
+    _grupo = insumos_da_particao(alvo, esqueleto=(
+        "heart" in alvo and _heart is not None and _heart.any()))
+    if "heart" in alvo and _heart is not None and _heart.any():
+        _grupo.update(p for c in ("ribs_left", "ribs_right") for p in COMPOSTOS[c])
+    _terminais = insumos_dos_terminais(alvo)
+    if _heart is None or not _heart.any():
+        _terminais.difference_update(("costal_cartilages", _nomes.CHAVE_DO_CORACAO_DO_MODELO))
     manter = []
     for k in list(fora):
         if (k in alvo or k in meta.get("construcoes", {}) or k in _deriv
-                or k in _grupo or _nomes.canonico(k) in _grupo):
+                or k in _grupo or _nomes.canonico(k) in _grupo
+                or _nomes.canonico(k) in _terminais):
             manter.append(k)
     _fica = set(manter)
     saiu = [k for k in fora if k not in _fica]
@@ -7363,6 +7512,7 @@ _FAMILIA_POR_PALAVRA = (
 
 _CORES = {
     "spinal_cord":       [244, 214, 49],
+    "cauda_equina":      [255, 151, 57],
     "brain":             [176, 136, 255],
     "eye":               [0, 229, 255],
     "lens":              [120, 245, 255],
@@ -7606,7 +7756,7 @@ TG263 = {
     "hip_left": "Bone_Pelvic_L",
     "hip_right": "Bone_Pelvic_R",
     "brain": "Brain", "brain_brainstem": "Brainstem", "brain_cerebellum": "Cerebellum",
-    "spinal_cord": "SpinalCord", "skull": "Skull",
+    "spinal_cord": "SpinalCord", "cauda_equina": "CaudaEquina", "skull": "Skull",
     "mandible": "Bone_Mandible",
     "teeth_upper": "Teeth_Upper", "teeth_lower": "Teeth_Lower",
     "sinus_maxillary": "Sinus_Maxill", "sinus_frontal": "Sinus_Frontal",
@@ -9479,9 +9629,11 @@ def gravar_dicom_em_fluxo(ds, caminho, implicit_vr=None, little_endian=None):
 
 
 def gravar_rtstruct(ds, caminho, tps=None, log=None, originais=None,
-                    dxdy=None, charset=None, plano=None):
+                    dxdy=None, charset=None, plano=None, finalizar=None):
     laudo = acabamento_para_o_tps(ds, tps, originais=originais, dxdy=dxdy,
                                   charset=charset)
+    if finalizar is not None:
+        finalizar(ds, laudo)
     de_volta_ao_paciente(ds, plano)
     gravar_dicom_em_fluxo(ds, caminho, implicit_vr=True, little_endian=True)
     _frase = frase_dos_contornos(laudo.get("contornos"))
@@ -9676,6 +9828,26 @@ def _suavizar_individuais(masks, nomes, grade, suavizar_mm, detalhe, finas):
             detalhe.append(det)
             masks[nm] = s
     return tratadas
+
+
+def _suporte_esqueletico_do_heart_fast(masks, gravar):
+    heart = _mascara_terminal(masks.get("heart"))
+    if heart is None or not heart.any():
+        return []
+    campos = []
+    for comp in ("ribs_left", "ribs_right"):
+        if comp in masks or comp in gravar:
+            continue
+        partes = [_mascara_terminal(masks[p], heart.shape)
+                  for p in COMPOSTOS[comp] if p in masks]
+        partes = [m for m in partes if m is not None and m.any()]
+        if partes:
+            campo = partes[0].copy()
+            for parte in partes[1:]:
+                campo |= parte
+            masks[comp] = campo
+            campos.append(comp)
+    return campos
 
 
 def _reunir_e_fechar(nome, m, spec, masks, viz, reune, grade, log=None):
@@ -9936,6 +10108,208 @@ def _suavizar_construcoes(masks, grade, suavizar_mm, construcoes, detalhe,
 
 def _mascara_para_o_rt_utils(m):
     return np.transpose(m, (1, 2, 0))
+
+
+def _tirar_roi_do_dataset(ds, nome):
+    nums = {int(r.ROINumber) for r in ds.StructureSetROISequence
+            if str(r.ROIName) == nome}
+    ds.StructureSetROISequence = pydicom.sequence.Sequence(
+        r for r in ds.StructureSetROISequence if int(r.ROINumber) not in nums)
+    ds.ROIContourSequence = pydicom.sequence.Sequence(
+        r for r in ds.ROIContourSequence if int(r.ReferencedROINumber) not in nums)
+    ds.RTROIObservationsSequence = pydicom.sequence.Sequence(
+        r for r in ds.RTROIObservationsSequence if int(r.ReferencedROINumber) not in nums)
+
+
+def _trocar_mascara_terminal(ds, cabecalhos, nome, numero, m, cor, plano, dxdy,
+                            descricao=None, derivada=False):
+    import copy
+    import cv2
+    import radai_geom
+    from rt_utils import ds_helper, image_helper
+    from rt_utils.utils import ROIData
+    tmp = pydicom.dataset.Dataset()
+    tmp.ReferencedFrameOfReferenceSequence = ds.ReferencedFrameOfReferenceSequence
+    for campo in ("StructureSetROISequence", "ROIContourSequence", "RTROIObservationsSequence"):
+        setattr(tmp, campo, pydicom.sequence.Sequence())
+    roi = ROIData(_mascara_para_o_rt_utils(_bool_seguro(m)), list(cor), numero, nome,
+                  ds.ReferencedFrameOfReferenceSequence[-1].FrameOfReferenceUID,
+                  "", False, True, 0)
+    tmp.StructureSetROISequence.append(ds_helper.create_structure_set_roi(roi))
+    tmp.RTROIObservationsSequence.append(ds_helper.create_rtroi_observation(roi))
+    rc = pydicom.dataset.Dataset()
+    rc.ReferencedROINumber = numero
+    rc.ROIDisplayColor = list(cor)
+    rc.ContourSequence = pydicom.sequence.Sequence()
+    matriz = image_helper.get_pixel_to_patient_transformation_matrix(cabecalhos)
+    for z in np.flatnonzero(np.asarray(m).any(axis=(1, 2))):
+        fatia = cabecalhos[int(z)]
+        duplo = np.pad(np.repeat(np.repeat(np.asarray(m[z], np.uint8), 2, 0), 2, 1), 1)
+        contornos, hierarquia = cv2.findContours(duplo, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        for i, contorno in enumerate(contornos):
+            xy = (contorno.reshape(-1, 2).astype(float) - 1.5) / 2.0
+            nivel, pai = 0, int(hierarquia[0, i, 3])
+            while pai >= 0:
+                nivel += 1
+                pai = int(hierarquia[0, pai, 3])
+            xy = radai_geom.expandir_meio_pixel(xy, 0.25, 0.25, furo=bool(nivel % 2))
+            pts = np.column_stack((xy, np.full(len(xy), z)))
+            pontos = image_helper.apply_transformation_to_3d_points(pts, matriz)
+            c = pydicom.dataset.Dataset()
+            c.ContourGeometricType = "CLOSED_PLANAR"
+            c.NumberOfContourPoints = len(pontos)
+            _gravar_pontos(c, [float(v) for v in pontos.ravel()])
+            imagem = pydicom.dataset.Dataset()
+            imagem.ReferencedSOPClassUID = fatia.SOPClassUID
+            imagem.ReferencedSOPInstanceUID = fatia.SOPInstanceUID
+            c.ContourImageSequence = pydicom.sequence.Sequence([imagem])
+            rc.ContourSequence.append(c)
+    tmp.ROIContourSequence.append(rc)
+    para_o_plano_da_serie(tmp, plano)
+    novo = copy.deepcopy(tmp.ROIContourSequence[0])
+    novo.ReferencedROINumber = numero
+    anterior = next((r for r in ds.ROIContourSequence
+                     if int(r.ReferencedROINumber) == numero), None)
+    if anterior is not None:
+        anterior.ContourSequence = novo.ContourSequence
+    else:
+        ds.ROIContourSequence.append(novo)
+    roi = next((r for r in ds.StructureSetROISequence if str(r.ROIName) == nome), None)
+    if roi is None:
+        roi = copy.deepcopy(tmp.StructureSetROISequence[0])
+        roi.ROINumber = numero
+        roi.ROIGenerationAlgorithm = "AUTOMATIC"
+        ds.StructureSetROISequence.append(roi)
+        obs = copy.deepcopy(tmp.RTROIObservationsSequence[0])
+        obs.ObservationNumber = numero
+        obs.ReferencedROINumber = numero
+        ds.RTROIObservationsSequence.append(obs)
+    if derivada:
+        roi.ROIGenerationDescription = "Radioterapia.AI (derivada por marco anatomico)"
+    if descricao:
+        roi.ROIDescription = _para_dicom(descricao)[:1024]
+
+
+def _raster_do_dataset(ds, cabecalhos, grade, forma, nomes, plano):
+    import copy
+    from types import SimpleNamespace
+    from radai_rt import SessaoRT
+    alvo = set(nomes)
+    aux = pydicom.dataset.Dataset()
+    aux.StructureSetROISequence = pydicom.sequence.Sequence(
+        copy.deepcopy(r) for r in ds.StructureSetROISequence if str(r.ROIName) in alvo)
+    nums = {int(r.ROINumber) for r in aux.StructureSetROISequence}
+    aux.ROIContourSequence = pydicom.sequence.Sequence(
+        copy.deepcopy(r) for r in ds.ROIContourSequence
+        if int(r.ReferencedROINumber) in nums)
+    de_volta_ao_paciente(aux, plano)
+    leitor = SessaoRT(None, None, grade, forma, nomes,
+                      SimpleNamespace(ds=aux, series_data=cabecalhos,
+                          get_roi_mask_by_name=lambda _n: np.zeros(
+                              (forma[1], forma[2], forma[0]), bool)))
+    return {nome: leitor.mascara(nome) for nome in nomes
+            if any(str(r.ROIName) == nome for r in aux.StructureSetROISequence)}
+
+
+def _finalizar_rois_terminais(ds, cabecalhos, grade, masks, mapa, ctx, internos,
+                              plano, dxdy, numeros, cores, descricoes=None,
+                              meta=None, log=None, tps=None):
+    ga = mapa.get("great_arteries")
+    arterial = ctx.get("arterias") if ga else None
+    medula = ctx.get("medula")
+    cord = mapa.get((medula or {}).get("chave")) or internos.get("medula")
+    cauda = mapa.get(CHAVE_CAUDA_EQUINA)
+    medula = medula if cord and (cauda or cord in mapa.values()) else None
+    l2 = mapa.get((medula or {}).get("l2_chave")) or internos.get("l2")
+    hm = (mapa.get((arterial or {}).get("modelo_chave")) or internos.get("modelo"))
+    heart = (mapa.get((arterial or {}).get("coracao_chave")) or internos.get("coracao"))
+    nomes = set(n for n in (ga, hm, heart, cord, cauda, l2) if n)
+    nomes.update(mapa[k] for k in ctx.get("atms", {}) if k in mapa)
+    forma = next((np.asarray(v).shape for k, v in masks.items()
+                  if not str(k).startswith("_") and np.asarray(v).ndim == 3), None)
+    r = _raster_do_dataset(ds, cabecalhos, grade, forma, nomes, plano)
+    desejadas = {}
+    medidas = {}
+    if arterial and hm in r and heart in r and r[hm].any() and r[heart].any():
+        residuo = r[hm] & ~r[heart]
+        desejadas["great_arteries"] = r.get(ga, np.zeros(forma, bool)) | residuo
+        medidas["great_arteries"] = {"residuo_voxels": int(residuo.sum()),
+                                     "heart_alterado": False}
+    elif arterial and log:
+        log(u"GreatArteries: sem Heart_Model e Heart final validos no DICOM; "
+            u"mantidas as arterias anteriores, sem acrescentar o modelo")
+    if medula and cord in r:
+        partes = partir_medula_em_l2(r[cord], r.get(l2), grade)
+        if partes is not None:
+            a, b, info = partes
+            desejadas[medula["chave"]], desejadas[CHAVE_CAUDA_EQUINA] = a, b
+            uniao = a | b
+            dsc = 2.0 * int((uniao & r[cord]).sum()) / max(1, int(uniao.sum() + r[cord].sum()))
+            medidas[CHAVE_CAUDA_EQUINA] = dict(info, dsc_uniao=dsc,
+                intersecao_voxels=int((a & b).sum()),
+                voxels_novos=int((uniao & ~r[cord]).sum()),
+                voxels_perdidos=int((r[cord] & ~uniao).sum()))
+        else:
+            desejadas[medula["chave"]] = r[cord]
+            desejadas[CHAVE_CAUDA_EQUINA] = np.zeros_like(r[cord])
+            if log:
+                log(u"SpinalCord: L2 ausente no DICOM final; mantida inteira, sem CaudaEquina")
+    import radai_constructs as _rc
+    for k, limite in ctx.get("atms", {}).items():
+        if mapa.get(k) in r:
+            desejadas[k] = _rc.limitar_atm_caudal(r[mapa[k]], grade, limite)
+    for k, m in desejadas.items():
+        nome = mapa.get(k)
+        if nome is None:
+            continue
+        if not m.any():
+            _tirar_roi_do_dataset(ds, nome)
+            mapa.pop(k, None)
+            continue
+        descricao = (descricoes or {}).get(nome)
+        if k == CHAVE_CAUDA_EQUINA and not descricao:
+            descricao = DESCRICAO_CAUDA_EQUINA
+        _trocar_mascara_terminal(ds, cabecalhos, nome, numeros[nome], m,
+                                 cores[nome], plano, dxdy, descricao,
+                                 derivada=k == CHAVE_CAUDA_EQUINA)
+    del r
+    checar = {mapa[k]: m for k, m in desejadas.items() if k in mapa}
+    ajuste_tps = {"furos": 0, "contornos": {}}
+    if tps == TPS_MONACO:
+        alvos = {numeros[n] for n in checar}
+        aux = pydicom.dataset.Dataset()
+        aux.ROIContourSequence = pydicom.sequence.Sequence(
+            rc for rc in ds.ROIContourSequence if int(rc.ReferencedROINumber) in alvos)
+        ajuste_tps["furos"] = _fundir_furos_por_fenda(aux)
+        if ajuste_tps["furos"]:
+            ajuste_tps["contornos"] = acabar_contornos(aux, None, dxdy)
+    falhas = []
+    for n, m in checar.items():
+        relida = _raster_do_dataset(ds, cabecalhos, grade, forma, (n,), plano).get(n)
+        if relida is None:
+            falhas.append((n, int(m.sum()), 0))
+        elif not np.array_equal(m, relida):
+            falhas.append((n, int((m & ~relida).sum()), int((relida & ~m).sum())))
+        del relida
+    if falhas:
+        raise RuntimeError("o RTSTRUCT nao preservou o acabamento terminal na rasterizacao "
+                           "(%d estrutura(s), %d voxels perdidos, %d novos)" % (
+                               len(falhas),
+                               sum(f[1] for f in falhas), sum(f[2] for f in falhas)))
+    for nome in internos.values():
+        _tirar_roi_do_dataset(ds, nome)
+    if isinstance(meta, dict):
+        meta.setdefault("acabamento_terminal", {}).update(medidas)
+    if log:
+        if "great_arteries" in medidas:
+            log(u"GreatArteries: uniao terminal conferida no DICOM, %d voxels "
+                u"do residuo Heart_Model - Heart final; Heart inalterado"
+                % medidas["great_arteries"]["residuo_voxels"])
+        if CHAVE_CAUDA_EQUINA in medidas:
+            log(u"SpinalCord/CaudaEquina: particao terminal no DICOM, L2 "
+                u"incluido na cauda; DSC da uniao %.6f, sem intersecao, "
+                u"novos voxels ou perda" % medidas[CHAVE_CAUDA_EQUINA]["dsc_uniao"])
+    return ajuste_tps
 
 
 RT_UTILS_DA_MONTAGEM_RAPIDA = "1.2.7"
@@ -10307,6 +10681,13 @@ def build_rtstruct(clean_dir, masks, tasks=None, versao_worker="", origem=None,
     _marca(u"derivadas", rodou=bool(derivar and grade is not None))
 
     _gravar = None if gravar is None else set(gravar)
+    _suporte_heart = []
+    if modo == "fast" and compostos_inteiros and not cru and _gravar is not None:
+        masks = dict(masks)
+        _suporte_heart = _suporte_esqueletico_do_heart_fast(masks, _gravar)
+        if log and _suporte_heart:
+            log(u"FAST: campos esqueleticos compartilhados mantidos apenas como "
+                u"insumo do acabamento Heart; sem ROIs de costelas")
     if compostos_inteiros and not cru:
         _partes_fora = []
         masks = dict(masks)
@@ -10428,6 +10809,17 @@ def build_rtstruct(clean_dir, masks, tasks=None, versao_worker="", origem=None,
            rodou=bool(grade is not None and suavizar_mm and suavizar_mm > 0
                       and not cru))
 
+    for _k in _suporte_heart:
+        masks.pop(_k, None)
+    _terminais = {}
+    if grade is not None and not cru:
+        masks = dict(masks)
+        construcoes = dict(construcoes or {})
+        observacoes = dict(observacoes or {})
+        _terminais = acabamentos_terminais(
+            masks, grade, construcoes, origem, observacoes, log)
+    _marca(u"acabamentos terminais", rodou=bool(_terminais))
+
     if _gravar is not None:
         _insumos = sorted(str(k) for k in masks
                           if k not in _gravar and not str(k).startswith("_"))
@@ -10449,7 +10841,10 @@ def build_rtstruct(clean_dir, masks, tasks=None, versao_worker="", origem=None,
                     pass
             continue
         _n_vx = int(_bool_seguro(masks[nm]).sum())
-        if _n_vx < 10:
+        _especial = (nm == "great_arteries" and "arterias" in _terminais
+                     or "medula" in _terminais and nm in (
+                         _terminais["medula"]["chave"], CHAVE_CAUDA_EQUINA))
+        if _n_vx < 10 and not _especial:
             descartadas.append((nm, _n_vx))
             continue
         do_nv = str(nm).startswith(PREFIXO_NV)
@@ -10539,7 +10934,12 @@ def build_rtstruct(clean_dir, masks, tasks=None, versao_worker="", origem=None,
                 except Exception:
                     pass
             mapa_origem[nome_final] = de_onde
-            mb = _mascara_para_o_rt_utils(_bool_seguro(masks[nm]))
+            _m_escrever = masks[nm]
+            if nm == "great_arteries" and "arterias" in _terminais:
+                _m_escrever = _terminais["arterias"]["antes"]
+            if "medula" in _terminais and nm == _terminais["medula"]["chave"]:
+                _m_escrever = _terminais["medula"]["antes"]
+            mb = _mascara_para_o_rt_utils(_bool_seguro(_m_escrever))
             try:
                 _adicionar_roi(rt, mb, nome_final, cor)
                 mapa_nomes[nm] = nome_final
@@ -10548,6 +10948,41 @@ def build_rtstruct(clean_dir, masks, tasks=None, versao_worker="", origem=None,
                     (nome_final, "%s: %s" % (type(_e1).__name__,
                                              str(_e1)[:80])))
             del mb
+        _internos = {}
+        _num = dict(_num)
+        for _tipo, _ctx, _chave, _m in (
+                ("modelo", _terminais.get("arterias"),
+                 (_terminais.get("arterias") or {}).get("modelo_chave"),
+                 (_terminais.get("arterias") or {}).get("modelo")),
+                ("coracao", _terminais.get("arterias"),
+                 (_terminais.get("arterias") or {}).get("coracao_chave"),
+                 (_terminais.get("arterias") or {}).get("coracao")),
+                ("medula", _terminais.get("medula"),
+                 (_terminais.get("medula") or {}).get("chave"),
+                 (_terminais.get("medula") or {}).get("antes")),
+                ("l2", _terminais.get("medula"),
+                 (_terminais.get("medula") or {}).get("l2_chave"),
+                 (_terminais.get("medula") or {}).get("l2"))):
+            if (_ctx is None or _chave in mapa_nomes
+                    or _tipo in ("modelo", "coracao") and "great_arteries" not in mapa_nomes
+                    or _tipo in ("medula", "l2") and not (
+                        CHAVE_CAUDA_EQUINA in mapa_nomes
+                        or (_terminais.get("medula") or {}).get("chave") in mapa_nomes)):
+                continue
+            _nome_interno = "_RadAI_insumo_%s" % _tipo
+            _adicionar_roi(rt, _mascara_para_o_rt_utils(_m), _nome_interno, [128, 128, 128])
+            _internos[_tipo] = _nome_interno
+            _num[_nome_interno] = max(_num.values(), default=0) + 1
+        _cabecalhos_terminais = []
+        if _terminais:
+            for _fatia in rt.series_data:
+                _cab = pydicom.dataset.Dataset()
+                for _tag in ("SOPClassUID", "SOPInstanceUID", "ImagePositionPatient",
+                             "ImageOrientationPatient", "PixelSpacing", "Rows", "Columns",
+                             "SliceThickness", "SpacingBetweenSlices"):
+                    if _tag in _fatia:
+                        _cab.add(_fatia.data_element(_tag))
+                _cabecalhos_terminais.append(_cab)
         _marca(u"mascara em contorno (add_roi)")
         if nao_entraram and log:
             try:
@@ -10922,9 +11357,25 @@ def build_rtstruct(clean_dir, masks, tasks=None, versao_worker="", origem=None,
                     meta["mascaras"] = masks
             except Exception:
                 pass
+        def _terminal_no_tps(dataset, laudo):
+            ajuste = _finalizar_rois_terminais(
+                dataset, _cabecalhos_terminais, grade, masks, mapa_nomes,
+                _terminais, _internos, _plano, _dxdy, _num,
+                {e[1]: e[2] for e in entradas}, _descr, meta, log,
+                tps=laudo.get("tps"))
+            laudo["furos"] += ajuste["furos"]
+            laudo["contornos"] = _somar_laudos(laudo.get("contornos"), ajuste["contornos"])
+            chaves = set(_terminais.get("atms", {}))
+            if "arterias" in _terminais:
+                chaves.add("great_arteries")
+            if "medula" in _terminais:
+                chaves.update((_terminais["medula"]["chave"], CHAVE_CAUDA_EQUINA))
+            _no_arquivo.difference_update(chaves - set(mapa_nomes))
+            _marca(u"acabamentos terminais e raster final do TPS")
+        _extra_final = {"finalizar": _terminal_no_tps} if _terminais else {}
         _lg = gravar_rtstruct(ds, destino, log=(None if do_oar else log),
                               originais=_originais, dxdy=_dxdy,
-                              charset=_charset, plano=_plano)
+                              charset=_charset, plano=_plano, **_extra_final)
         del _originais
         _frase = frase_dos_contornos(_lg.get("contornos"))
         if do_oar and log and _frase:
