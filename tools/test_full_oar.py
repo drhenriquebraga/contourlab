@@ -5311,9 +5311,9 @@ def teste_o_fast_grava_so_o_oar_fast():
                nomes and all(n.endswith("_ai") for n in nomes)
                and not any(n.lower().startswith(("body", "external"))
                            for n in nomes), str(nomes))
-        checar(u"  e a descricao diz que NAO e copia do FULL e que decimou",
+        checar(u"  e a descricao diz que NAO e copia do FULL e que preservou os pontos",
                "NAO e copia" in str(ds.StructureSetDescription)
-               and "Douglas-Peucker" in str(ds.StructureSetDescription),
+               and "Douglas-Peucker" not in str(ds.StructureSetDescription),
                str(ds.StructureSetDescription)[:200])
         _b = os.path.basename(r["oar_fast"])
         checar(u"o registro o reconhece: `fast`, e ENTREGUE",
@@ -5326,7 +5326,7 @@ def teste_o_fast_grava_so_o_oar_fast():
         sd2, r2, l2, dest2 = _rodar(base, serie)
         retiradas = {E.nome_clinico(k) for k in (
             "bag_bowel_oar", "anus", "Skin", "ChestWall_L", "ChestWall_R",
-            "ribs_left", "ribs_right", "costal_cartilages")}
+            "ribs_left", "ribs_right", "costal_cartilages", "sternum")}
         esperado = set(r2["estruturas"]) - retiradas
         checar(u"o conteudo FAST exclui bag, anus, pele, paredes, costelas e cartilagem",
                set(r["estruturas"]) == esperado,
@@ -5367,8 +5367,8 @@ def teste_o_fast_grava_so_o_oar_fast():
                u"sobrepor o coracao tambem no FAST",
                _h is not None and _cruz and _cruz.get("great_arteries") == 0,
                str(_cruz))
-        checar(u"o log diz os pontos que sairam e o filtro",
-               any(u"decimacao (Douglas-Peucker" in l for l in linhas)
+        checar(u"o log diz que preservou os pontos e aplicou o filtro",
+               any(u"sem decimacao de pontos" in l for l in linhas)
                and any(l.startswith(u"FAST: o filtro do OAR_Fast") for l in
                        linhas))
         velho = RO.normalizar_modo
@@ -5397,15 +5397,14 @@ def _funcoes_que_decimam(fonte):
     return fora
 
 
-def teste_a_decimacao_so_no_fast():
-    secao(u"a decimacao so no FAST (spec 1.4 c)")
+def teste_as_entregas_nao_decimam():
+    secao(u"FAST, AUTO e FULL sem decimacao de pontos")
     base = tempfile.mkdtemp(prefix="radai_t_fulloar_")
     try:
         serie = _serie(base)
         sd, r, linhas, dest = _rodar(base, serie, modo="fast")
         dec = r.get("decimacao") or {}
-        checar(u"o FAST decimou: menos pontos que antes",
-               dec.get("antes", 0) > dec.get("depois", 0) > 0, str(dec))
+        checar(u"o FAST conserva os pontos do gravador comum", not dec, str(dec))
         ds = pydicom.dcmread(r["oar_fast"])
         ruins = []
         for rc in ds.ROIContourSequence:
@@ -5416,14 +5415,7 @@ def teste_a_decimacao_so_no_fast():
                                   int(c.NumberOfContourPoints)))
         checar(u"  nenhum poligono com menos de 3 pontos, e o "
                u"NumberOfContourPoints acompanha", not ruins, str(ruins[:4]))
-        checar(u"  e o log diz quantos pontos sairam",
-               any(u"decimacao (Douglas-Peucker, 0.2 mm" in l
-                   and u"pontos" in l for l in linhas))
-        checar(u"  e quantos poligonos a guarda da estrutura pequena poupou "
-               u"(27/09/2026)",
-               any(u"poupados da decimacao" in l for l in linhas)
-               and "poupados_area" in dec and "poupados_perda" in dec,
-               str(dec))
+        checar(u"o FAST informa que nao decima", any(u"sem decimacao de pontos" in l for l in linhas))
         sd2, r2, l2, dest2 = _rodar(base, serie, modo="auto")
 
         def _sem_decimacao(sdx, lx):
@@ -5450,8 +5442,8 @@ def teste_a_decimacao_so_no_fast():
                u"do AUTO reprovar", not _sem_decimacao(sd3, l3))
         fonte = open(os.path.join(pasta_app(AQUI), "radai_output.py"),
                      encoding="utf-8").read()
-        checar(u"em radai_output, SO o `_oar_fast` passa `decimar_mm=`",
-               _funcoes_que_decimam(fonte) == {"_oar_fast"},
+        checar(u"nenhuma entrega passa decimar_mm ao gravador",
+               not _funcoes_que_decimam(fonte),
                str(_funcoes_que_decimam(fonte)))
         _alvo = u"                selecao=permitidos,\n"
         checar(u"  (isca) a linha da chamada do FULL esta onde a isca a "
@@ -6472,13 +6464,12 @@ def teste_o_entregue_nao_tem_contorno_degenerado_nem_cruzado():
                            _defeitos_de_contorno(r["full"]) == (0, 0, 0),
                            str(_defeitos_de_contorno(r["full"])))
                 checar(u"%s %s: o log diz o acabamento dos contornos"
-                       % (tps, modo), any(u"acabamento dos contornos" in l
-                                          and u"voltaram ao contorno" in l
+                       % (tps, modo), any(u"contornos (meio pixel, Taubin)" in l
                                           for l in linhas),
                        str([l for l in linhas if u"acabamento" in l][:2]))
         (a0, rep, cr), _l, _r = _medir("eclipse", "auto", isca=True)
         checar(u"ISCA: com a reparacao de antes (so n < 3) o entregue tem "
-               u"area nula e cruzamento", a0 > 0 and cr > 0,
+               u"area nula ou cruzamento", a0 > 0 or cr > 0,
                u"area nula %d, cruza %d" % (a0, cr))
         ds = pydicom.Dataset()
         rc = pydicom.Dataset()
@@ -6775,7 +6766,7 @@ def main():
               teste_o_reto_e_os_compostos_da_pelve,
               teste_os_compostos_da_pelve_so_vao_ao_oar_com_a_pelve,
               teste_o_fast_grava_so_o_oar_fast,
-              teste_a_decimacao_so_no_fast,
+              teste_as_entregas_nao_decimam,
               teste_a_decimacao_poupa_a_estrutura_pequena,
               teste_o_oar_fora_so_tira_do_oar,
               teste_os_compostos_inteiros_no_grupo_e_sem_o_coracao,

@@ -2510,6 +2510,8 @@ CONSTRUCOES.append({
 def insumos_dos_terminais(alvo):
     alvo = set(alvo or ())
     fora = set()
+    if {"great_arteries", "aorta"} & alvo:
+        fora.add("esophagus")
     if "great_arteries" in alvo:
         fora.update((_nomes.CHAVE_DO_CORACAO_DO_MODELO, "heart"))
     if {"spinal_cord", CHAVE_CAUDA_EQUINA} & alvo:
@@ -2528,6 +2530,15 @@ def _acrescentar_observacao_terminal(observacoes, chave, texto):
 def acabamentos_terminais(masks, grade, construcoes=None, origem=None,
                           observacoes=None, log=None):
     ctx = {}
+    esofago = _nomes.achar(masks, "esophagus")
+    es = _mascara_terminal(masks.get(esofago))
+    aorta = _nomes.achar(masks, "aorta")
+    ao = _mascara_terminal(masks.get(aorta), None if es is None else es.shape)
+    if es is not None and es.any() and (ao is not None or "great_arteries" in masks):
+        ctx["prioridade_esofago"] = {"chave": esofago, "mascara": es,
+            "aorta_chave": aorta, "aorta_antes": ao}
+        if ao is not None:
+            masks[aorta] = ao & ~es
     construcoes = {} if construcoes is None else construcoes
     origem = {} if origem is None else origem
     observacoes = {} if observacoes is None else observacoes
@@ -2549,6 +2560,13 @@ def acabamentos_terminais(masks, grade, construcoes=None, origem=None,
     elif log and (hm is not None or "great_arteries" in masks):
         log(u"GreatArteries: sem Heart_Model e Heart final validos na mesma "
             u"grade; residuo cardiaco nao acrescentado")
+    if "prioridade_esofago" in ctx:
+        if "great_arteries" in masks:
+            masks["great_arteries"] = _bool_seguro(masks["great_arteries"]) & ~es
+        for k in (aorta, "great_arteries"):
+            if k in masks:
+                _acrescentar_observacao_terminal(observacoes, k,
+                    u"Interseccoes cedidas ao esofago final, que permanece inalterado.")
     chave = _nomes.achar(masks, "spinal_cord")
     l2 = _nomes.achar(masks, "vertebrae_L2")
     partes = partir_medula_em_l2(masks.get(chave), masks.get(l2), grade)
@@ -3179,6 +3197,7 @@ def _filtrar_para(fora, alvo, meta, diz=None):
     _grupo = insumos_da_particao(alvo, esqueleto=(
         "heart" in alvo and _heart is not None and _heart.any()))
     if "heart" in alvo and _heart is not None and _heart.any():
+        _grupo.update(GRUPOS_DISJUNTOS["esqueleto_toracico"])
         _grupo.update(p for c in ("ribs_left", "ribs_right") for p in COMPOSTOS[c])
     _terminais = insumos_dos_terminais(alvo)
     if _heart is None or not _heart.any():
@@ -10134,7 +10153,7 @@ def _trocar_mascara_terminal(ds, cabecalhos, nome, numero, m, cor, plano, dxdy,
         setattr(tmp, campo, pydicom.sequence.Sequence())
     roi = ROIData(_mascara_para_o_rt_utils(_bool_seguro(m)), list(cor), numero, nome,
                   ds.ReferencedFrameOfReferenceSequence[-1].FrameOfReferenceUID,
-                  "", False, True, 0)
+                  "", False, False, 0)
     tmp.StructureSetROISequence.append(ds_helper.create_structure_set_roi(roi))
     tmp.RTROIObservationsSequence.append(ds_helper.create_rtroi_observation(roi))
     rc = pydicom.dataset.Dataset()
@@ -10145,7 +10164,7 @@ def _trocar_mascara_terminal(ds, cabecalhos, nome, numero, m, cor, plano, dxdy,
     for z in np.flatnonzero(np.asarray(m).any(axis=(1, 2))):
         fatia = cabecalhos[int(z)]
         duplo = np.pad(np.repeat(np.repeat(np.asarray(m[z], np.uint8), 2, 0), 2, 1), 1)
-        contornos, hierarquia = cv2.findContours(duplo, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        contornos, hierarquia = cv2.findContours(duplo, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
         for i, contorno in enumerate(contornos):
             xy = (contorno.reshape(-1, 2).astype(float) - 1.5) / 2.0
             nivel, pai = 0, int(hierarquia[0, i, 3])
@@ -10223,7 +10242,10 @@ def _finalizar_rois_terminais(ds, cabecalhos, grade, masks, mapa, ctx, internos,
     l2 = mapa.get((medula or {}).get("l2_chave")) or internos.get("l2")
     hm = (mapa.get((arterial or {}).get("modelo_chave")) or internos.get("modelo"))
     heart = (mapa.get((arterial or {}).get("coracao_chave")) or internos.get("coracao"))
-    nomes = set(n for n in (ga, hm, heart, cord, cauda, l2) if n)
+    prioridade = ctx.get("prioridade_esofago") or {}
+    esofago = mapa.get(prioridade.get("chave")) or internos.get("esofago")
+    aorta = mapa.get(prioridade.get("aorta_chave"))
+    nomes = set(n for n in (ga, hm, heart, cord, cauda, l2, esofago, aorta) if n)
     nomes.update(mapa[k] for k in ctx.get("atms", {}) if k in mapa)
     forma = next((np.asarray(v).shape for k, v in masks.items()
                   if not str(k).startswith("_") and np.asarray(v).ndim == 3), None)
@@ -10254,6 +10276,12 @@ def _finalizar_rois_terminais(ds, cabecalhos, grade, masks, mapa, ctx, internos,
             desejadas[CHAVE_CAUDA_EQUINA] = np.zeros_like(r[cord])
             if log:
                 log(u"SpinalCord: L2 ausente no DICOM final; mantida inteira, sem CaudaEquina")
+    if esofago in r:
+        for k, nome in (("great_arteries", ga), (prioridade.get("aorta_chave"), aorta)):
+            if nome in r:
+                antes = desejadas.get(k, r[nome])
+                desejadas[k] = antes & ~r[esofago]
+                medidas.setdefault("prioridade_esofago", {})[k] = int((antes & r[esofago]).sum())
     import radai_constructs as _rc
     for k, limite in ctx.get("atms", {}).items():
         if mapa.get(k) in r:
@@ -10330,7 +10358,7 @@ def _adicionar_roi(rt, mb, nome, cor):
     # GUARDA: replica o add_roi do rt_utils 1.2.7 com o ContourData ja
     # convertido; outra versao do rt_utils segue pelo add_roi dele.
     if _rt_utils_instalado() != RT_UTILS_DA_MONTAGEM_RAPIDA:
-        rt.add_roi(mask=mb, name=nome, color=cor)
+        rt.add_roi(mask=mb, name=nome, color=cor, approximate_contours=False)
         return
     from rt_utils import ds_helper, image_helper
     from rt_utils.utils import ROIData
@@ -10338,7 +10366,7 @@ def _adicionar_roi(rt, mb, nome, cor):
             or len(rt.series_data) != np.shape(mb)[2]):
         rt.validate_mask(mb)
     roi = ROIData(mb, cor, len(rt.ds.StructureSetROISequence) + 1, nome,
-                  rt.frame_of_reference_uid, "", False, True, 0)
+                  rt.frame_of_reference_uid, "", False, False, 0)
     seq = pydicom.sequence.Sequence()
     for fatia, contornos in zip(rt.series_data,
                                 image_helper.get_contours_coords(
@@ -10939,6 +10967,9 @@ def build_rtstruct(clean_dir, masks, tasks=None, versao_worker="", origem=None,
                 _m_escrever = _terminais["arterias"]["antes"]
             if "medula" in _terminais and nm == _terminais["medula"]["chave"]:
                 _m_escrever = _terminais["medula"]["antes"]
+            _prioridade = _terminais.get("prioridade_esofago") or {}
+            if nm == _prioridade.get("aorta_chave"):
+                _m_escrever = _prioridade["aorta_antes"]
             mb = _mascara_para_o_rt_utils(_bool_seguro(_m_escrever))
             try:
                 _adicionar_roi(rt, mb, nome_final, cor)
@@ -10960,10 +10991,15 @@ def build_rtstruct(clean_dir, masks, tasks=None, versao_worker="", origem=None,
                 ("medula", _terminais.get("medula"),
                  (_terminais.get("medula") or {}).get("chave"),
                  (_terminais.get("medula") or {}).get("antes")),
+                ("esofago", _terminais.get("prioridade_esofago"),
+                 (_terminais.get("prioridade_esofago") or {}).get("chave"),
+                 (_terminais.get("prioridade_esofago") or {}).get("mascara")),
                 ("l2", _terminais.get("medula"),
                  (_terminais.get("medula") or {}).get("l2_chave"),
                  (_terminais.get("medula") or {}).get("l2"))):
             if (_ctx is None or _chave in mapa_nomes
+                    or _tipo == "esofago" and not ("great_arteries" in mapa_nomes
+                        or (_terminais.get("prioridade_esofago") or {}).get("aorta_chave") in mapa_nomes)
                     or _tipo in ("modelo", "coracao") and "great_arteries" not in mapa_nomes
                     or _tipo in ("medula", "l2") and not (
                         CHAVE_CAUDA_EQUINA in mapa_nomes

@@ -284,7 +284,7 @@ class Motor89(unittest.TestCase):
                 self.assertFalse(SK._para_canonico(final, g)[:10].any())
             _cleanup.apagar_arvore(str(Path(caminho).parent))
 
-    def test_heart_fast_igual_a_referencia_publicada_88(self):
+    def test_receita_heart_no_gravador_historico_88(self):
         referencias = {
             0: "c4982515a03885ade107df5043fd71e03d249840daba67d8612440044cd7b798",
             3: "73859d16ad7271f3640afa2f4067cf3907e5b68f4981a63f8dd39a239110966b",
@@ -305,7 +305,17 @@ class Motor89(unittest.TestCase):
                 def suavizadas(m, nomes, *a, **kw):
                     individuais.extend(nomes)
                     return suavizar(m, nomes, *a, **kw)
+                from rt_utils import image_helper
+                extrair = image_helper.find_mask_contours
+                montar = E.build_rtstruct
+                def historico(m, aproximar):
+                    return extrair(m, True)
+                def gravar_historico(*a, **kw):
+                    kw["decimar_mm"] = 0.2
+                    return montar(*a, **kw)
                 with patch.object(E, "VOLUME_MINIMO_CORACAO_CM3", 1.0), \
+                     patch.object(image_helper, "find_mask_contours", side_effect=historico), \
+                     patch.object(E, "build_rtstruct", side_effect=gravar_historico), \
                      patch.object(E, "recompor_compostos", side_effect=recompostas), \
                      patch.object(E, "_suavizar_individuais", side_effect=suavizadas):
                     r = sd.full_e_oar(cruas_cardiacas(vol.shape, variante),

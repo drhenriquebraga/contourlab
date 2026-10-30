@@ -300,7 +300,7 @@ PERMITIDOS_NO_OAR = frozenset([
 
 FORA_DO_OAR_FAST = frozenset([
     "bag_bowel_oar", "anus", "Skin", "ChestWall_L", "ChestWall_R",
-    "ribs_left", "ribs_right", "costal_cartilages",
+    "ribs_left", "ribs_right", "costal_cartilages", "sternum",
 ])
 PERMITIDOS_NO_OAR_FAST = frozenset(PERMITIDOS_NO_OAR - FORA_DO_OAR_FAST)
 

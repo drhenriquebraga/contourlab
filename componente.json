@@ -84,6 +84,7 @@
     "test_verseg.py",
     "test_watcher.py",
     "test_weights.py",
-    "test_zip_split.py"
+    "test_zip_split.py",
+    "test_motor_v810.py"
   ]
 }

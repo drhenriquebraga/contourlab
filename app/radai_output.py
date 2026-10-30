@@ -763,7 +763,6 @@ class Saida(object):
             if _nomes_proprios and _aceita(engine.build_rtstruct,
                                            "nomes_do_entregue"):
                 extra["nomes_do_entregue"] = _nomes_proprios
-            decimar = getattr(engine, "DECIMACAO_FAST_MM", 0.2)
             t_rs = time.time()
             rt, nomes = engine.build_rtstruct(
                 self.stage, masks, tasks=self.tasks,
@@ -776,7 +775,7 @@ class Saida(object):
                 observacoes=observacoes, construcoes=construcoes,
                 exigir_grade=True, selecao=alvo, meta=meta,
                 gravar=gravar, compostos_inteiros=True,
-                decimar_mm=decimar, modo=MODO_FAST, **extra)
+                modo=MODO_FAST, **extra)
             if not nomes:
                 _apagar_temp_do_oar(rt, engine)
                 raise RuntimeError(u"o OAR_Fast saiu vazio")
@@ -792,9 +791,8 @@ class Saida(object):
                 _apagar_temp_do_oar(rt, engine)
             self.gravados.append("fast")
             dec = dict(meta.get("decimacao") or {})
-            self.log(u"%s: %d estrutura(s) em %s (%s pontos -> %s)"
-                     % (reg["nome"], len(nomes), os.path.basename(alvo_fast),
-                        dec.get("antes", "?"), dec.get("depois", "?")))
+            self.log(u"%s: %d estrutura(s) em %s (sem decimacao de pontos)"
+                     % (reg["nome"], len(nomes), os.path.basename(alvo_fast)))
             tempos = list(meta_pre.get("tempos") or [])
             tempos.append((u"montagem do OAR_Fast", t_grav - t_rs))
             tempos.append((u"gravacao do OAR_Fast", time.time() - t_grav))
