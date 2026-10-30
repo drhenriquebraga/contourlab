@@ -7341,6 +7341,9 @@ def _turno_segue_na_fila():
 
 
 def o_que_segura_o_fechar():
+    plugin = sys.modules.get('radai_plugins')
+    if plugin is not None and plugin.preparo_em_andamento():
+        return u"a instalação do NEURO RT está em andamento"
     if STATE.get("overnight"):
         return u"o turno da noite esta aberto"
     q = quem_esta_segmentando()
@@ -7353,6 +7356,9 @@ def o_que_segura_o_fechar():
 
 
 def _segurar_a_fila_ao_fechar(sim):
+    plugin = sys.modules.get('radai_plugins')
+    if not sim and plugin is not None and plugin.preparo_em_andamento():
+        return
     if sim and _turno_segue_na_fila():
         wlog("o navegador foi fechado com o turno da noite na fila: a fila "
              "segue ate o turno, e o programa se encerra no fim dele")
